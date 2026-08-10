@@ -10,6 +10,11 @@ out/
 .env.*
 !.env.example
 *.log
+*.tsbuildinfo
+
+# Local agent state and captured request data
+.claude-flow/
+*.har
 
 # Editor and operating system files
 .DS_Store

@@ -1,0 +1,87 @@
+name: xloyal
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-xloyal}
+      POSTGRES_USER: ${POSTGRES_USER:-xloyal}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy-tidakdepploykedoscker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy-tidakdepploykedoscker/backend/Dockerfile
+      target: api
+    environment: &backend-env
+      DATABASE_URL: postgres://${POSTGRES_USER:-xloyal}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-xloyal}?sslmode=disable
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
+      ADMIN_TOKENS_JSON: ${ADMIN_TOKENS_JSON:-{}}
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: deploy-tidakdepploykedoscker/backend/Dockerfile
+      target: worker
+    environment: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pidof worker >/dev/null"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy-tidakdepploykedoscker/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+      INTERNAL_API_URL: http://api:8080
+      NEXT_PUBLIC_USE_MOCK_API: ${NEXT_PUBLIC_USE_MOCK_API:-false}
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN}
+      ADMIN_CONSOLE_EMAIL: ${ADMIN_CONSOLE_EMAIL:-admin@xloyal.id}
+      ADMIN_CONSOLE_PASSWORD: ${ADMIN_CONSOLE_PASSWORD}
+      CONSOLE_SESSION_SECRET: ${CONSOLE_SESSION_SECRET}
+      CONSOLE_COOKIE_SECURE: ${CONSOLE_COOKIE_SECURE:-false}
+      PORT: "3000"
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+

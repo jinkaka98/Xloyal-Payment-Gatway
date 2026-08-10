@@ -1,0 +1,244 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Xloyal Payment Gateway API",
+    "version": "0.1.0",
+    "description": "Tenant-isolated QRIS invoice API and role-protected administration API."
+  },
+  "servers": [{"url": "http://localhost:8080"}],
+  "tags": [
+    {"name": "Public"},
+    {"name": "Admin"}
+  ],
+  "paths": {
+    "/v1/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {"200": {"description": "Healthy", "content": {"application/json": {"schema": {"type": "object", "required": ["status"], "properties": {"status": {"const": "ok"}}}}}}}
+      }
+    },
+    "/v1/tenants/{tenant_id}/invoices": {
+      "post": {
+        "tags": ["Public"],
+        "operationId": "createInvoice",
+        "security": [{"ApiKey": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/TenantId"},
+          {"name": "Idempotency-Key", "in": "header", "required": false, "schema": {"type": "string"}, "description": "Used when IdempotencyKey is absent from the body."}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateInvoice"}}}},
+        "responses": {
+          "201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Invoice"}}}},
+          "200": {"description": "Existing idempotent invoice", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Invoice"}}}},
+          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"},
+          "409": {"$ref": "#/components/responses/Problem"}, "502": {"$ref": "#/components/responses/Problem"}
+        }
+      }
+    },
+    "/v1/invoices/{invoice_id}": {
+      "get": {
+        "tags": ["Public"], "operationId": "getInvoice", "security": [{"ApiKey": []}],
+        "parameters": [{"$ref": "#/components/parameters/InvoiceId"}],
+        "responses": {"200": {"description": "Invoice", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Invoice"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/v1/invoices/{invoice_id}/check": {
+      "post": {
+        "tags": ["Public"], "operationId": "checkInvoice", "security": [{"ApiKey": []}],
+        "parameters": [{"$ref": "#/components/parameters/InvoiceId"}],
+        "responses": {"200": {"description": "Updated invoice", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Invoice"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/Problem"}, "502": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/v1/invoices/{invoice_id}/qr": {
+      "get": {
+        "tags": ["Public"], "operationId": "invoiceQr", "security": [{"ApiKey": []}],
+        "parameters": [{"$ref": "#/components/parameters/InvoiceId"}],
+        "responses": {"200": {"description": "QR code PNG", "content": {"image/png": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/admin/tenants": {
+      "get": {
+        "tags": ["Admin"], "operationId": "listTenants", "security": [{"AdminBearer": []}],
+        "responses": {"200": {"description": "Tenants", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Tenant"}}}}}, "403": {"$ref": "#/components/responses/Problem"}}
+      },
+      "post": {
+        "tags": ["Admin"], "operationId": "createTenant", "security": [{"AdminBearer": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateTenant"}}}},
+        "responses": {"201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Tenant"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/admin/merchant-accounts": {
+      "get": {
+        "tags": ["Admin"], "operationId": "listMerchantAccounts", "security": [{"AdminBearer": []}],
+        "parameters": [{"$ref": "#/components/parameters/TenantFilter"}],
+        "responses": {"200": {"description": "Merchant accounts", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/MerchantAccount"}}}}}, "403": {"$ref": "#/components/responses/Problem"}}
+      },
+      "post": {
+        "tags": ["Admin"], "operationId": "createMerchantAccount", "security": [{"AdminBearer": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateMerchantAccount"}}}},
+        "responses": {"201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MerchantAccount"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/admin/merchant-accounts/{id}/test-connection": {
+      "post": {
+        "tags": ["Admin"], "operationId": "testMerchantConnection", "security": [{"AdminBearer": []}],
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}},
+          {"name": "tenant_id", "in": "query", "required": true, "schema": {"type": "string"}}
+        ],
+        "responses": {"200": {"description": "Provider reachable", "content": {"application/json": {"schema": {"type": "object", "required": ["ok"], "properties": {"ok": {"const": true}}}}}}, "403": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "502": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/admin/invoices": {
+      "get": {
+        "tags": ["Admin"], "operationId": "listInvoices", "security": [{"AdminBearer": []}],
+        "parameters": [{"$ref": "#/components/parameters/TenantFilter"}],
+        "responses": {"200": {"description": "Invoices", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Invoice"}}}}}, "403": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/admin/invoices/{id}": {
+      "get": {
+        "tags": ["Admin"], "operationId": "getAdminInvoice", "security": [{"AdminBearer": []}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}, {"$ref": "#/components/parameters/TenantFilter"}],
+        "responses": {"200": {"description": "Invoice", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Invoice"}}}}, "403": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/admin/dashboard": {
+      "get": {
+        "tags": ["Admin"], "operationId": "adminDashboard", "security": [{"AdminBearer": []}],
+        "responses": {"200": {"description": "Payment summary", "content": {"application/json": {"schema": {"type": "object"}}}}, "403": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/admin/health": {
+      "get": {
+        "tags": ["Admin"], "operationId": "adminHealth", "security": [{"AdminBearer": []}],
+        "responses": {"200": {"description": "Database and provider health", "content": {"application/json": {"schema": {"type": "array", "items": {"type": "object"}}}}}, "403": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/admin/qris-templates": {
+      "get": {
+        "tags": ["Admin"], "operationId": "listQRISTemplates", "security": [{"AdminBearer": []}],
+        "responses": {"200": {"description": "Stored static QRIS templates", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/QRISTemplate"}}}}}}
+      },
+      "post": {
+        "tags": ["Admin"], "operationId": "createQRISTemplate", "security": [{"AdminBearer": []}],
+        "requestBody": {"required": true, "content": {"multipart/form-data": {"schema": {"type": "object", "required": ["image"], "properties": {"name": {"type": "string"}, "image": {"type": "string", "contentEncoding": "binary"}}}}}},
+        "responses": {"201": {"description": "Decoded and stored template", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QRISTemplate"}}}}, "400": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/admin/qris-templates/{id}/image": {
+      "get": {
+        "tags": ["Admin"], "operationId": "qrisTemplateImage", "security": [{"AdminBearer": []}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Original uploaded QRIS image", "content": {"image/png": {"schema": {"type": "string", "contentEncoding": "binary"}}, "image/jpeg": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "404": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/admin/qris-test-payments": {
+      "get": {
+        "tags": ["Admin"], "operationId": "listQRISTestPayments", "security": [{"AdminBearer": []}],
+        "responses": {"200": {"description": "Test payments", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/TestPayment"}}}}}}
+      },
+      "post": {
+        "tags": ["Admin"], "operationId": "createQRISTestPayment", "security": [{"AdminBearer": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["qris_template_id", "amount"], "properties": {"qris_template_id": {"type": "string"}, "amount": {"type": "integer", "minimum": 1, "maximum": 100000000}}}}}},
+        "responses": {"201": {"description": "Dynamic QRIS test payment", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TestPayment"}}}}, "400": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/admin/qris-test-payments/{id}/qr": {
+      "get": {
+        "tags": ["Admin"], "operationId": "qrisTestPaymentImage", "security": [{"AdminBearer": []}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Generated dynamic QRIS PNG", "content": {"image/png": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "404": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/admin/audit-events": {
+      "get": {
+        "tags": ["Admin"], "operationId": "listAuditEvents", "security": [{"AdminBearer": []}],
+        "parameters": [{"$ref": "#/components/parameters/TenantFilter"}],
+        "responses": {"200": {"description": "Audit events", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/AuditEvent"}}}}}, "403": {"$ref": "#/components/responses/Problem"}}
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKey": {"type": "apiKey", "in": "header", "name": "X-API-Key"},
+      "AdminBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque"}
+    },
+    "parameters": {
+      "TenantId": {"name": "tenant_id", "in": "path", "required": true, "schema": {"type": "string"}},
+      "InvoiceId": {"name": "invoice_id", "in": "path", "required": true, "schema": {"type": "string"}},
+      "TenantFilter": {"name": "tenant_id", "in": "query", "required": false, "schema": {"type": "string"}}
+    },
+    "responses": {
+      "Problem": {"description": "Error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Problem"}}}}
+    },
+    "schemas": {
+      "Problem": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}},
+      "CreateInvoice": {
+        "type": "object", "additionalProperties": false, "required": ["merchant_account_id", "amount"],
+        "properties": {
+          "merchant_account_id": {"type": "string"}, "idempotency_key": {"type": "string", "maxLength": 128},
+          "amount": {"type": "integer", "format": "int64", "minimum": 1, "maximum": 100000000}, "currency": {"type": "string", "const": "IDR", "default": "IDR"}, "description": {"type": "string", "maxLength": 200}
+        },
+        "anyOf": [{"required": ["idempotency_key"]}, {"description": "Idempotency-Key header is supplied."}]
+      },
+      "CreateTenant": {
+        "type": "object", "additionalProperties": false, "required": ["id", "name", "api_key"],
+        "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "api_key": {"type": "string", "minLength": 24, "writeOnly": true}}
+      },
+      "CreateMerchantAccount": {
+        "type": "object", "additionalProperties": false, "required": ["id", "tenant_id", "provider", "name", "credential"],
+        "properties": {
+          "id": {"type": "string"}, "tenant_id": {"type": "string"}, "provider": {"type": "string", "const": "openapi"}, "name": {"type": "string"},
+          "credential": {
+            "type": "object", "writeOnly": true, "additionalProperties": false,
+            "required": ["base_url", "merchant_id", "api_key"],
+            "properties": {
+              "base_url": {"type": "string", "format": "uri"}, "merchant_id": {"type": "string"}, "api_key": {"type": "string"},
+              "create_path": {"type": "string"}, "check_path": {"type": "string"}
+            }
+          }
+        }
+      },
+      "Tenant": {
+        "type": "object", "required": ["id", "name", "active", "created_at"],
+        "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "active": {"type": "boolean"}, "created_at": {"type": "string", "format": "date-time"}}
+      },
+      "MerchantAccount": {
+        "type": "object", "required": ["id", "tenant_id", "provider", "name", "active", "created_at"],
+        "properties": {"id": {"type": "string"}, "tenant_id": {"type": "string"}, "provider": {"type": "string"}, "name": {"type": "string"}, "active": {"type": "boolean"}, "created_at": {"type": "string", "format": "date-time"}}
+      },
+      "Invoice": {
+        "type": "object",
+        "required": ["id", "tenant_id", "merchant_account_id", "idempotency_key", "amount", "currency", "status", "created_at", "updated_at", "expires_at", "check_count"],
+        "properties": {
+          "id": {"type": "string"}, "tenant_id": {"type": "string"}, "merchant_account_id": {"type": "string"}, "idempotency_key": {"type": "string"},
+          "amount": {"type": "integer", "format": "int64"}, "currency": {"type": "string"}, "description": {"type": "string"},
+          "provider_reference": {"type": "string"}, "provider_request_date": {"type": "string"}, "qr_payload": {"type": "string"},
+          "status": {"type": "string", "enum": ["creating", "pending", "paid", "expired", "failed"]},
+          "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
+          "last_checked_at": {"type": ["string", "null"], "format": "date-time"}, "check_count": {"type": "integer", "minimum": 0}
+        }
+      },
+      "QRISTemplate": {
+        "type": "object", "required": ["id", "name", "image_mime", "merchant_name", "merchant_city", "created_at"],
+        "properties": {
+          "id": {"type": "string"}, "name": {"type": "string"}, "image_mime": {"type": "string"},
+          "merchant_name": {"type": "string"}, "merchant_city": {"type": "string"}, "created_at": {"type": "string", "format": "date-time"}
+        }
+      },
+      "TestPayment": {
+        "type": "object", "required": ["id", "qris_template_id", "amount", "dynamic_payload", "status", "created_at", "expires_at"],
+        "properties": {
+          "id": {"type": "string"}, "qris_template_id": {"type": "string"}, "amount": {"type": "integer", "format": "int64"},
+          "dynamic_payload": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]},
+          "created_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"}
+        }
+      },
+      "AuditEvent": {
+        "type": "object", "required": ["id", "actor", "action", "resource_type", "resource_id", "created_at"],
+        "properties": {"id": {"type": "string"}, "tenant_id": {"type": "string"}, "actor": {"type": "string"}, "action": {"type": "string"}, "resource_type": {"type": "string"}, "resource_id": {"type": "string"}, "metadata": {"type": "object", "additionalProperties": true}, "created_at": {"type": "string", "format": "date-time"}}
+      }
+    }
+  }
+}
