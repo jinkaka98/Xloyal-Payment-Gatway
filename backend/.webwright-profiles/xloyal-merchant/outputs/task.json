@@ -1,0 +1,4 @@
+{
+  "task": "merchant transaction sync",
+  "start_url": "https://merchant.qris.interactive.co.id/v2/m/kontenr.php?idir=pages/historytrx.php"
+}

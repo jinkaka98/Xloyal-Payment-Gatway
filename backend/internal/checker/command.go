@@ -1,10 +1,12 @@
 package checker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"xloyal/backend/internal/domain"
@@ -12,14 +14,55 @@ import (
 )
 
 type commandInput struct {
-	MerchantID string          `json:"merchant_id"`
-	Cookies    json.RawMessage `json:"cookies"`
+	MerchantID        string          `json:"merchant_id"`
+	Cookies           json.RawMessage `json:"cookies"`
+	BrowserCredential json.RawMessage `json:"browser_credential,omitempty"`
 }
 type commandOutput struct {
 	Transactions []domain.PortalTransaction `json:"transactions"`
 }
 
 // CommandRunner delegates authenticated portal parsing to a local Camoufox helper.
+func ManualLoginRunner(command string, cipher *security.Cipher) func(context.Context, domain.MerchantConnection) error {
+	return func(ctx context.Context, connection domain.MerchantConnection) error {
+		if strings.TrimSpace(command) == "" {
+			return errors.New("CAMOUFOX_CHECKER_CMD is not configured")
+		}
+		cookies := []byte("[]")
+		if connection.SessionCiphertext != "" {
+			var err error
+			cookies, err = cipher.Decrypt(connection.SessionCiphertext)
+			if err != nil {
+				return err
+			}
+		}
+		browserCredential := []byte("null")
+		if connection.BrowserCredentialCiphertext != "" {
+			var err error
+			browserCredential, err = cipher.Decrypt(connection.BrowserCredentialCiphertext)
+			if err != nil {
+				return err
+			}
+		}
+		input, err := json.Marshal(commandInput{MerchantID: connection.MerchantID, Cookies: cookies, BrowserCredential: browserCredential})
+		if err != nil {
+			return err
+		}
+		var cmd *exec.Cmd
+		if runtime.GOOS == "windows" {
+			cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", "$env:WEBWRIGHT_MANUAL_LOGIN='true'; "+command)
+		} else {
+			cmd = exec.CommandContext(ctx, "sh", "-c", "WEBWRIGHT_MANUAL_LOGIN=true "+command)
+		}
+		cmd.Stdin = strings.NewReader(string(input))
+		if err = cmd.Start(); err != nil {
+			return err
+		}
+		go func() { _ = cmd.Wait() }()
+		return nil
+	}
+}
+
 func CommandRunner(command string, cipher *security.Cipher) func(context.Context, domain.MerchantConnection) ([]domain.PortalTransaction, error) {
 	return func(ctx context.Context, connection domain.MerchantConnection) ([]domain.PortalTransaction, error) {
 		if strings.TrimSpace(command) == "" {
@@ -33,15 +76,28 @@ func CommandRunner(command string, cipher *security.Cipher) func(context.Context
 				return nil, err
 			}
 		}
-		input, err := json.Marshal(commandInput{MerchantID: connection.MerchantID, Cookies: cookies})
+		browserCredential := []byte("null")
+		if connection.BrowserCredentialCiphertext != "" {
+			var err error
+			browserCredential, err = cipher.Decrypt(connection.BrowserCredentialCiphertext)
+			if err != nil {
+				return nil, err
+			}
+		}
+		input, err := json.Marshal(commandInput{MerchantID: connection.MerchantID, Cookies: cookies, BrowserCredential: browserCredential})
 		if err != nil {
 			return nil, err
 		}
-		parts := strings.Fields(command)
-		if len(parts) == 0 {
-			return nil, errors.New("invalid CAMOUFOX_CHECKER_CMD")
+		var cmd *exec.Cmd
+		if runtime.GOOS == "windows" {
+			cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
+		} else {
+			parts := strings.Fields(command)
+			if len(parts) == 0 {
+				return nil, errors.New("invalid CAMOUFOX_CHECKER_CMD")
+			}
+			cmd = exec.CommandContext(ctx, parts[0], parts[1:]...)
 		}
-		cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 		cmd.Stdin = strings.NewReader(string(input))
 		raw, err := cmd.CombinedOutput()
 		if err != nil {
@@ -55,7 +111,11 @@ func CommandRunner(command string, cipher *security.Cipher) func(context.Context
 			return nil, err
 		}
 		var output commandOutput
-		if err = json.Unmarshal(raw, &output); err != nil {
+		payloadStart := bytes.LastIndex(raw, []byte(`{"transactions"`))
+		if payloadStart < 0 {
+			return nil, errors.New("checker output does not contain a transactions payload")
+		}
+		if err = json.Unmarshal(raw[payloadStart:], &output); err != nil {
 			return nil, err
 		}
 		return output.Transactions, nil

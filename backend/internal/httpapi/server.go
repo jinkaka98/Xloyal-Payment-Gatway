@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -28,6 +29,7 @@ type Server struct {
 	Gateway     gateway.Service
 	Cipher      *security.Cipher
 	AdminTokens map[string]string
+	ManualLogin func(context.Context, domain.MerchantConnection) error
 }
 
 func (s Server) Handler() http.Handler {
@@ -51,6 +53,7 @@ func (s Server) Handler() http.Handler {
 	m.HandleFunc("POST /admin/merchant-connections/har", s.admin("operator", s.importDefaultMerchantHAR))
 	m.HandleFunc("POST /admin/merchant-ids/{id}/connection/revoke", s.admin("operator", s.revokeMerchantSession))
 	m.HandleFunc("POST /admin/merchant-ids/{id}/sync", s.admin("operator", s.requestMerchantSync))
+	m.HandleFunc("POST /admin/merchant-ids/{id}/connection/manual-login", s.admin("operator", s.startManualMerchantLogin))
 	m.HandleFunc("GET /admin/merchant-ids/{id}/tariff", s.admin("viewer", s.getTariff))
 	m.HandleFunc("PUT /admin/merchant-ids/{id}/tariff", s.admin("operator", s.putTariff))
 	m.HandleFunc("GET /admin/merchant-transactions", s.admin("viewer", s.listMerchantTransactions))
@@ -82,6 +85,8 @@ func (s Server) createMerchantID(w http.ResponseWriter, r *http.Request, _ domai
 		InteractiveMerchantID string          `json:"interactive_merchant_id"`
 		Name                  string          `json:"name"`
 		Credential            json.RawMessage `json:"credential"`
+		BrowserEmail          string          `json:"browser_email"`
+		BrowserPassword       string          `json:"browser_password"`
 		TenantIDs             []string        `json:"tenant_ids"`
 	}
 	if !decode(w, r, &in) {
@@ -115,6 +120,26 @@ func (s Server) createMerchantID(w http.ResponseWriter, r *http.Request, _ domai
 		problem(w, 500, "encrypt credential failed")
 		return
 	}
+	if (in.BrowserEmail == "") != (in.BrowserPassword == "") {
+		problem(w, 400, "browser_email and browser_password must be provided together")
+		return
+	}
+	browserCredentialCiphertext := ""
+	if in.BrowserEmail != "" {
+		browserCredential, marshalErr := json.Marshal(struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}{Email: in.BrowserEmail, Password: in.BrowserPassword})
+		if marshalErr != nil {
+			problem(w, 500, "encode browser credential failed")
+			return
+		}
+		browserCredentialCiphertext, err = s.Cipher.Encrypt(browserCredential)
+		if err != nil {
+			problem(w, 500, "encrypt browser credential failed")
+			return
+		}
+	}
 	v := domain.MerchantID{ID: in.ID, InteractiveMerchantID: in.InteractiveMerchantID, Name: in.Name, CredentialCiphertext: ciphertext, Active: true, CreatedAt: time.Now().UTC()}
 	if err = s.Repo.CreateMerchantID(r.Context(), v); err != nil {
 		problem(w, 400, "create merchant ID failed")
@@ -126,7 +151,7 @@ func (s Server) createMerchantID(w http.ResponseWriter, r *http.Request, _ domai
 			return
 		}
 	}
-	_ = s.Repo.UpsertMerchantConnection(r.Context(), domain.MerchantConnection{MerchantID: v.ID, Status: domain.ConnectionDisconnected, UpdatedAt: time.Now().UTC()})
+	_ = s.Repo.UpsertMerchantConnection(r.Context(), domain.MerchantConnection{MerchantID: v.ID, BrowserCredentialCiphertext: browserCredentialCiphertext, Status: domain.ConnectionDisconnected, UpdatedAt: time.Now().UTC()})
 	s.Repo.AppendAudit(r.Context(), domain.AuditEvent{ID: v.ID + "-created", Actor: "admin", Action: "merchant_id.created", ResourceType: "merchant_id", ResourceID: v.ID, CreatedAt: time.Now().UTC()})
 	write(w, 201, v)
 }
@@ -283,6 +308,30 @@ func (s Server) revokeMerchantSession(w http.ResponseWriter, r *http.Request, _ 
 	}
 	write(w, 200, v)
 }
+func (s Server) startManualMerchantLogin(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
+	if s.ManualLogin == nil {
+		problem(w, http.StatusServiceUnavailable, "manual browser login is not configured")
+		return
+	}
+	connection, err := s.Repo.MerchantConnection(r.Context(), r.PathValue("id"))
+	if err != nil {
+		notFound(w, err)
+		return
+	}
+	if err = s.ManualLogin(context.Background(), connection); err != nil {
+		problem(w, http.StatusInternalServerError, "open manual browser login failed")
+		return
+	}
+	connection.Status = domain.ConnectionReconnectRequired
+	connection.LastError = "Manual browser login in progress"
+	connection.UpdatedAt = time.Now().UTC()
+	if err = s.Repo.UpsertMerchantConnection(r.Context(), connection); err != nil {
+		problem(w, http.StatusInternalServerError, "mark manual browser login failed")
+		return
+	}
+	write(w, http.StatusAccepted, map[string]string{"status": "manual_login_started"})
+}
+
 func (s Server) requestMerchantSync(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
 	v, err := s.Repo.MerchantConnection(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -820,33 +869,33 @@ func (s Server) adminHealth(w http.ResponseWriter, r *http.Request, _ domain.Ten
 
 	merchantIDs, err := s.Repo.ListMerchantIDs(r.Context())
 	if err != nil {
-		problem(w, http.StatusInternalServerError, "repository error")
-		return
-	}
-	for _, merchantID := range merchantIDs {
-		item := result{ID: "browser-" + merchantID.ID, Name: merchantID.Name, Kind: "browser_session", Status: "offline", Endpoint: "merchant.qris.interactive.co.id", LastCheckedAt: checkedAt, Message: "Session browser belum tersambung"}
-		connection, connectionErr := s.Repo.MerchantConnection(r.Context(), merchantID.ID)
-		if connectionErr == nil {
-			item.UpdatedAt = connection.UpdatedAt.Format(time.RFC3339)
-			if connection.LastSyncedAt != nil {
-				item.LastConnectedAt = connection.LastSyncedAt.Format(time.RFC3339)
-				item.LastSyncedAt = item.LastConnectedAt
+		out = append(out, result{ID: "browser-sessions", Name: "Browser sessions", Kind: "browser_session", Status: "offline", Endpoint: "merchant.qris.interactive.co.id", LastCheckedAt: checkedAt, Message: "Schema browser session belum siap"})
+	} else {
+		for _, merchantID := range merchantIDs {
+			item := result{ID: "browser-" + merchantID.ID, Name: merchantID.Name, Kind: "browser_session", Status: "offline", Endpoint: "merchant.qris.interactive.co.id", LastCheckedAt: checkedAt, Message: "Session browser belum tersambung"}
+			connection, connectionErr := s.Repo.MerchantConnection(r.Context(), merchantID.ID)
+			if connectionErr == nil {
+				item.UpdatedAt = connection.UpdatedAt.Format(time.RFC3339)
+				if connection.LastSyncedAt != nil {
+					item.LastConnectedAt = connection.LastSyncedAt.Format(time.RFC3339)
+					item.LastSyncedAt = item.LastConnectedAt
+				}
+				switch connection.Status {
+				case domain.ConnectionConnected:
+					item.Status, item.Message = "operational", "Session browser tersambung dan dikelola worker"
+				case domain.ConnectionReconnectRequired, domain.ConnectionExpired:
+					item.Status, item.Message = "degraded", "Session browser memerlukan pemulihan koneksi"
+				default:
+					item.Status, item.Message = "offline", "Session browser tidak tersambung"
+				}
+				if connection.LastError != "" {
+					item.Message = connection.LastError
+				}
+			} else if !errors.Is(connectionErr, store.ErrNotFound) {
+				item.Message = "Status session browser tidak dapat dibaca"
 			}
-			switch connection.Status {
-			case domain.ConnectionConnected:
-				item.Status, item.Message = "operational", "Session browser tersambung dan dikelola worker"
-			case domain.ConnectionReconnectRequired, domain.ConnectionExpired:
-				item.Status, item.Message = "degraded", "Session browser memerlukan pemulihan koneksi"
-			default:
-				item.Status, item.Message = "offline", "Session browser tidak tersambung"
-			}
-			if connection.LastError != "" {
-				item.Message = connection.LastError
-			}
-		} else if !errors.Is(connectionErr, store.ErrNotFound) {
-			item.Message = "Status session browser tidak dapat dibaca"
+			out = append(out, item)
 		}
-		out = append(out, item)
 	}
 
 	merchants, err := s.Repo.ListMerchantAccounts(r.Context(), r.URL.Query().Get("tenant_id"))

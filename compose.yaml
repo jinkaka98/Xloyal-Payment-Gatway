@@ -50,6 +50,16 @@ services:
       CAMOFOX_BROWSER_URL: http://camofox-browser:9377
       CAMOFOX_BROWSER_API_KEY: ${CAMOFOX_BROWSER_API_KEY}
       CAMOUFOX_CREDENTIAL_FILE: ${CAMOUFOX_CREDENTIAL_FILE:-}
+      WEBWRIGHT_PORTAL_URL: ${WEBWRIGHT_PORTAL_URL:-https://merchant.qris.interactive.co.id}
+      WEBWRIGHT_HISTORY_PATH: ${WEBWRIGHT_HISTORY_PATH:-/v2/m/kontenr.php?idir=pages/historytrx.php}
+      WEBWRIGHT_TRANSACTION_ROW_SELECTOR: ${WEBWRIGHT_TRANSACTION_ROW_SELECTOR:-[data-transaction-row]}
+      WEBWRIGHT_REFERENCE_SELECTOR: ${WEBWRIGHT_REFERENCE_SELECTOR:-[data-field='reference']}
+      WEBWRIGHT_AMOUNT_SELECTOR: ${WEBWRIGHT_AMOUNT_SELECTOR:-[data-field='amount']}
+      WEBWRIGHT_STATUS_SELECTOR: ${WEBWRIGHT_STATUS_SELECTOR:-[data-field='status']}
+      WEBWRIGHT_PAID_AT_SELECTOR: ${WEBWRIGHT_PAID_AT_SELECTOR:-[data-field='paid_at']}
+      WEBWRIGHT_PROFILE_DIR: ${WEBWRIGHT_PROFILE_DIR:-/var/lib/xloyal/webwright-profiles}
+      WEBWRIGHT_BROWSER_MODE: ${WEBWRIGHT_BROWSER_MODE:-cloak_persistent}
+      WEBWRIGHT_HEADLESS: ${WEBWRIGHT_HEADLESS:-true}
     depends_on:
       postgres:
         condition: service_healthy

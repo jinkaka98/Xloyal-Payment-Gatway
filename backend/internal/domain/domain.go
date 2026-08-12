@@ -76,12 +76,13 @@ const (
 )
 
 type MerchantConnection struct {
-	MerchantID        string           `json:"merchant_id"`
-	SessionCiphertext string           `json:"-"`
-	Status            ConnectionStatus `json:"status"`
-	LastSyncedAt      *time.Time       `json:"last_synced_at,omitempty"`
-	LastError         string           `json:"last_error,omitempty"`
-	UpdatedAt         time.Time        `json:"updated_at"`
+	MerchantID                  string           `json:"merchant_id"`
+	SessionCiphertext           string           `json:"-"`
+	BrowserCredentialCiphertext string           `json:"-"`
+	Status                      ConnectionStatus `json:"status"`
+	LastSyncedAt                *time.Time       `json:"last_synced_at,omitempty"`
+	LastError                   string           `json:"last_error,omitempty"`
+	UpdatedAt                   time.Time        `json:"updated_at"`
 }
 
 type PortalTransaction struct {

@@ -24,6 +24,7 @@ type App struct {
 	Cipher       *security.Cipher
 	Gateway      gateway.Service
 	MerchantSync func(context.Context, domain.MerchantConnection) ([]domain.PortalTransaction, error)
+	ManualLogin  func(context.Context, domain.MerchantConnection) error
 }
 
 func Open() (*App, error) {
@@ -68,8 +69,10 @@ func Open() (*App, error) {
 	}
 	g := gateway.Service{Repo: repo, Provider: resolve}
 	var merchantSync func(context.Context, domain.MerchantConnection) ([]domain.PortalTransaction, error)
-	if os.Getenv("CAMOUFOX_CHECKER_CMD") != "" {
-		merchantSync = checker.CommandRunner(os.Getenv("CAMOUFOX_CHECKER_CMD"), cipher)
+	var manualLogin func(context.Context, domain.MerchantConnection) error
+	if command := os.Getenv("CAMOUFOX_CHECKER_CMD"); command != "" {
+		merchantSync = checker.CommandRunner(command, cipher)
+		manualLogin = checker.ManualLoginRunner(command, cipher)
 	}
-	return &App{DB: db, Repo: repo, Cipher: cipher, Gateway: g, MerchantSync: merchantSync}, nil
+	return &App{DB: db, Repo: repo, Cipher: cipher, Gateway: g, MerchantSync: merchantSync, ManualLogin: manualLogin}, nil
 }
