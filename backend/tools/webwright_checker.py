@@ -164,7 +164,11 @@ if start_date and end_date:
         placeholder = (await candidate.get_attribute("placeholder") or "").lower()
         value = await candidate.input_value()
         if "tanggal" in placeholder or "tanggal" in value.lower() or " - " in value:
-            await candidate.fill(f"{{start_display}} - {{end_display}}")
+            await candidate.click()
+            await candidate.press("Control+A")
+            await candidate.fill(start_display + " - " + end_display)
+            await candidate.press("Enter")
+            await page.wait_for_timeout(500)
             break
     numeric_inputs = page.locator("input[type='number'], input[inputmode='numeric']")
     for index in range(await numeric_inputs.count()):
@@ -176,7 +180,11 @@ if start_date and end_date:
     submit = page.get_by_role("button", name="Tampilkan Hasil")
     if await submit.count():
         await submit.first.click()
-        await page.wait_for_load_state("networkidle", timeout=15000)
+        await page.wait_for_timeout(3000)
+        body_text = await page.locator("body").inner_text()
+        expected_range = start_display + " - " + end_display
+        if expected_range not in body_text:
+            raise RuntimeError("history filter was not applied; expected " + expected_range)
 transactions = []
 seen_references = set()
 for _ in range({int(os.getenv("WEBWRIGHT_HISTORY_MAX_PAGES", "100"))}):
@@ -225,7 +233,7 @@ print(json.dumps({{"transactions": transactions}}))
         user_data_dir=profile_dir,
         output_dir=profile_dir / "outputs",
         browser_navigation_timeout_ms=30000,
-        step_execution_timeout_ms=660000 if manual_login else 45000,
+        step_execution_timeout_ms=660000 if manual_login else 105000,
     )
     try:
         with contextlib.redirect_stdout(sys.stderr):

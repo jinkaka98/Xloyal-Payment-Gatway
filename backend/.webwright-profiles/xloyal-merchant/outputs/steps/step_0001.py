@@ -16,8 +16,8 @@ if await email_input.count() and await password_input.count():
     raise RuntimeError("portal login is still displayed; verify browser email and password")
 await page.goto("https://merchant.qris.interactive.co.id/v2/m/kontenr.php?idir=pages/historytrx.php", wait_until="domcontentloaded")
 await page.wait_for_load_state("networkidle", timeout=15000)
-start_date = "2026-08-12"
-end_date = "2026-08-12"
+start_date = "2026-08-13"
+end_date = "2026-08-13"
 start_display = "/".join(reversed(start_date.split("-")))
 end_display = "/".join(reversed(end_date.split("-")))
 if start_date and end_date:
@@ -27,7 +27,11 @@ if start_date and end_date:
         placeholder = (await candidate.get_attribute("placeholder") or "").lower()
         value = await candidate.input_value()
         if "tanggal" in placeholder or "tanggal" in value.lower() or " - " in value:
-            await candidate.fill(f"{start_display} - {end_display}")
+            await candidate.click()
+            await candidate.press("Control+A")
+            await candidate.fill(start_display + " - " + end_display)
+            await candidate.press("Enter")
+            await page.wait_for_timeout(500)
             break
     numeric_inputs = page.locator("input[type='number'], input[inputmode='numeric']")
     for index in range(await numeric_inputs.count()):
@@ -39,7 +43,11 @@ if start_date and end_date:
     submit = page.get_by_role("button", name="Tampilkan Hasil")
     if await submit.count():
         await submit.first.click()
-        await page.wait_for_load_state("networkidle", timeout=15000)
+        await page.wait_for_timeout(3000)
+        body_text = await page.locator("body").inner_text()
+        expected_range = start_display + " - " + end_display
+        if expected_range not in body_text:
+            raise RuntimeError("history filter was not applied; expected " + expected_range)
 transactions = []
 seen_references = set()
 for _ in range(100):
