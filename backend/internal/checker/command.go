@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
 	"xloyal/backend/internal/domain"
 	"xloyal/backend/internal/security"
@@ -17,6 +18,7 @@ type commandInput struct {
 	MerchantID        string          `json:"merchant_id"`
 	Cookies           json.RawMessage `json:"cookies"`
 	BrowserCredential json.RawMessage `json:"browser_credential,omitempty"`
+	SyncFrom          string          `json:"sync_from,omitempty"`
 }
 type commandOutput struct {
 	Transactions []domain.PortalTransaction `json:"transactions"`
@@ -84,7 +86,11 @@ func CommandRunner(command string, cipher *security.Cipher) func(context.Context
 				return nil, err
 			}
 		}
-		input, err := json.Marshal(commandInput{MerchantID: connection.MerchantID, Cookies: cookies, BrowserCredential: browserCredential})
+		syncFrom := time.Now().AddDate(0, 0, -30)
+		if connection.LastSyncedAt != nil {
+			syncFrom = connection.LastSyncedAt.Add(-5 * time.Minute)
+		}
+		input, err := json.Marshal(commandInput{MerchantID: connection.MerchantID, Cookies: cookies, BrowserCredential: browserCredential, SyncFrom: syncFrom.Format("2006-01-02")})
 		if err != nil {
 			return nil, err
 		}

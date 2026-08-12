@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +110,9 @@ def run(payload: dict[str, Any]) -> list[dict[str, Any]]:
     portal_url = required_env("WEBWRIGHT_PORTAL_URL", "https://merchant.qris.interactive.co.id")
     history_path = os.getenv("WEBWRIGHT_HISTORY_PATH", "/v2/m/kontenr.php?idir=pages/historytrx.php")
     row_selector = required_env("WEBWRIGHT_TRANSACTION_ROW_SELECTOR")
+    requested_sync_from = str(payload.get("sync_from", ""))
+    history_start_date = os.getenv("WEBWRIGHT_HISTORY_START_DATE", requested_sync_from or (date.today() - timedelta(days=30)).isoformat())
+    history_end_date = os.getenv("WEBWRIGHT_HISTORY_END_DATE", date.today().isoformat())
     profile_root = Path(os.getenv("WEBWRIGHT_PROFILE_DIR", ".webwright-profiles"))
     profile_dir = profile_root / merchant_id
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -149,7 +153,20 @@ if await email_input.count() and await password_input.count():
     raise RuntimeError("portal login is still displayed; verify browser email and password")
 await page.goto({json.dumps(portal_url + history_path)}, wait_until="domcontentloaded")
 await page.wait_for_load_state("networkidle", timeout=15000)
-rows = await page.locator({json.dumps(row_selector)}).evaluate_all('''
+start_date = {json.dumps(history_start_date)}
+end_date = {json.dumps(history_end_date)}
+date_inputs = page.locator("input[type='date']")
+if start_date and end_date and await date_inputs.count() >= 2:
+    await date_inputs.nth(0).fill(start_date)
+    await date_inputs.nth(1).fill(end_date)
+    submit = page.locator("button[type='submit'], input[type='submit']")
+    if await submit.count():
+        await submit.first.click()
+        await page.wait_for_load_state("networkidle", timeout=15000)
+transactions = []
+seen_references = set()
+for _ in range({int(os.getenv("WEBWRIGHT_HISTORY_MAX_PAGES", "100"))}):
+    rows = await page.locator({json.dumps(row_selector)}).evaluate_all('''
 (rows) => rows.map((row) => {{
   const value = (selector) => selector ? row.querySelector(selector)?.textContent?.trim() || "" : "";
   const amountText = value({json.dumps(os.getenv("WEBWRIGHT_AMOUNT_SELECTOR", "[data-field='amount']"))});
@@ -164,7 +181,27 @@ rows = await page.locator({json.dumps(row_selector)}).evaluate_all('''
   }};
 }})
 ''')
-print(json.dumps({{"transactions": rows}}))
+    for row in rows:
+        if row["reference"] and row["amount"] > 0 and row["paid_at"] and row["reference"] not in seen_references:
+            transactions.append(row)
+            seen_references.add(row["reference"])
+    next_page = page.locator("a[rel='next'], button[aria-label='Next'], .paginate_button.next, .pagination .next a")
+    if not await next_page.count():
+        break
+    next_button = next_page.first
+    is_disabled = await next_button.evaluate("(element) => element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true' || element.classList.contains('disabled') || element.parentElement?.classList.contains('disabled')")
+    if is_disabled:
+        break
+    previous = rows[0]["reference"] if rows else ""
+    await next_button.click()
+    await page.wait_for_timeout(750)
+    current_rows = await page.locator({json.dumps(row_selector)}).count()
+    if current_rows == 0:
+        break
+    current_reference = await page.locator({json.dumps(row_selector)}).first.locator({json.dumps(os.getenv("WEBWRIGHT_REFERENCE_SELECTOR", "[data-field='reference']"))}).text_content()
+    if previous and (current_reference or "").strip() == previous:
+        break
+print(json.dumps({{"transactions": transactions}}))
 """
 
     environment = LocalBrowserEnvironment(

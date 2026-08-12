@@ -8,15 +8,15 @@ const merchantID = /^[A-Za-z0-9_-]{1,128}$/;
 async function authorize() { return verifySessionToken((await cookies()).get(SESSION_COOKIE)?.value, process.env.CONSOLE_SESSION_SECRET ?? ""); }
 function resolvePath(method: string, parts: string[]) {
   const [resource, id, connection, action] = parts;
+  const getResources = new Set(["health", "qris-templates", "qris-test-payments", "merchant-accounts", "dashboard", "invoices", "audit-events", "merchant-transactions", "global-transactions", "merchant-ids"]);
+  if (parts.length === 1 && method === "GET" && resource && getResources.has(resource)) return `/admin/${resource}`;
   if (resource === "tenants" && parts.length === 1 && ["GET", "POST"].includes(method)) return "/admin/tenants";
   if (resource === "tenants" && parts.length === 2 && id && merchantID.test(id) && method === "PUT") return `/admin/tenants/${id}`;
   if (resource === "merchant-connections" && parts.length === 2 && id === "har" && method === "POST") return "/admin/merchant-connections/har";
-  if (resource === "global-transactions" && parts.length === 1 && method === "GET") return "/admin/global-transactions";
-  if (resource === "merchant-ids" && parts.length === 1 && method === "POST") return "/admin/merchant-ids";
   if (resource !== "merchant-ids" || !id || !merchantID.test(id)) return "";
   if (parts.length === 2 && method === "GET") return `/admin/merchant-ids/${id}`;
   if (parts.length === 3 && connection === "connection" && method === "GET") return `/admin/merchant-ids/${id}/connection`;
-  if (parts.length === 4 && connection === "connection" && ["session", "har", "revoke"].includes(action ?? "") && method === "POST") return `/admin/merchant-ids/${id}/connection/${action}`;
+  if (parts.length === 4 && connection === "connection" && ["session", "har", "revoke", "manual-login"].includes(action ?? "") && method === "POST") return `/admin/merchant-ids/${id}/connection/${action}`;
   if (parts.length === 3 && connection === "sync" && method === "POST") return `/admin/merchant-ids/${id}/sync`;
   return "";
 }

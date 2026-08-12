@@ -16,7 +16,20 @@ if await email_input.count() and await password_input.count():
     raise RuntimeError("portal login is still displayed; verify browser email and password")
 await page.goto("https://merchant.qris.interactive.co.id/v2/m/kontenr.php?idir=pages/historytrx.php", wait_until="domcontentloaded")
 await page.wait_for_load_state("networkidle", timeout=15000)
-rows = await page.locator("table tbody tr").evaluate_all('''
+start_date = "2026-08-12"
+end_date = "2026-08-12"
+date_inputs = page.locator("input[type='date']")
+if start_date and end_date and await date_inputs.count() >= 2:
+    await date_inputs.nth(0).fill(start_date)
+    await date_inputs.nth(1).fill(end_date)
+    submit = page.locator("button[type='submit'], input[type='submit']")
+    if await submit.count():
+        await submit.first.click()
+        await page.wait_for_load_state("networkidle", timeout=15000)
+transactions = []
+seen_references = set()
+for _ in range(100):
+    rows = await page.locator("table tbody tr").evaluate_all('''
 (rows) => rows.map((row) => {
   const value = (selector) => selector ? row.querySelector(selector)?.textContent?.trim() || "" : "";
   const amountText = value("td:nth-child(3)");
@@ -31,4 +44,24 @@ rows = await page.locator("table tbody tr").evaluate_all('''
   };
 })
 ''')
-print(json.dumps({"transactions": rows}))
+    for row in rows:
+        if row["reference"] and row["amount"] > 0 and row["paid_at"] and row["reference"] not in seen_references:
+            transactions.append(row)
+            seen_references.add(row["reference"])
+    next_page = page.locator("a[rel='next'], button[aria-label='Next'], .paginate_button.next, .pagination .next a")
+    if not await next_page.count():
+        break
+    next_button = next_page.first
+    is_disabled = await next_button.evaluate("(element) => element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true' || element.classList.contains('disabled') || element.parentElement?.classList.contains('disabled')")
+    if is_disabled:
+        break
+    previous = rows[0]["reference"] if rows else ""
+    await next_button.click()
+    await page.wait_for_timeout(750)
+    current_rows = await page.locator("table tbody tr").count()
+    if current_rows == 0:
+        break
+    current_reference = await page.locator("table tbody tr").first.locator("td:nth-child(9)").text_content()
+    if previous and (current_reference or "").strip() == previous:
+        break
+print(json.dumps({"transactions": transactions}))

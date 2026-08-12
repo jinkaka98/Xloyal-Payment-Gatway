@@ -867,6 +867,18 @@ func (s Server) adminHealth(w http.ResponseWriter, r *http.Request, _ domain.Ten
 	database.LatencyMS = time.Since(started).Milliseconds()
 	out = append(out, database)
 
+	adminData := result{ID: "admin-data", Name: "Admin data", Kind: "database", Status: "operational", Endpoint: "/admin/tenants + /admin/qris-templates", LastCheckedAt: checkedAt, Message: "Tabel data admin siap dibaca"}
+	started = time.Now()
+	if _, err := s.Repo.ListTenants(r.Context()); err != nil {
+		adminData.Status, adminData.Message = "offline", "Tabel tenant tidak dapat dibaca"
+	} else if _, err := s.Repo.ListQRISTemplates(r.Context()); err != nil {
+		adminData.Status, adminData.Message = "offline", "Tabel QRIS template tidak dapat dibaca"
+	} else {
+		adminData.LastConnectedAt = checkedAt
+	}
+	adminData.LatencyMS = time.Since(started).Milliseconds()
+	out = append(out, adminData)
+
 	merchantIDs, err := s.Repo.ListMerchantIDs(r.Context())
 	if err != nil {
 		out = append(out, result{ID: "browser-sessions", Name: "Browser sessions", Kind: "browser_session", Status: "offline", Endpoint: "merchant.qris.interactive.co.id", LastCheckedAt: checkedAt, Message: "Schema browser session belum siap"})
