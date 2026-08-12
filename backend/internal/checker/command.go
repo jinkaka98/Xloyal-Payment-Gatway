@@ -87,7 +87,7 @@ func CommandRunner(command string, cipher *security.Cipher) func(context.Context
 			}
 		}
 		syncFrom := time.Now().AddDate(0, 0, -30)
-		if connection.LastSyncedAt != nil {
+		if connection.HistoryBackfilledAt != nil && connection.LastSyncedAt != nil {
 			syncFrom = connection.LastSyncedAt.Add(-5 * time.Minute)
 		}
 		input, err := json.Marshal(commandInput{MerchantID: connection.MerchantID, Cookies: cookies, BrowserCredential: browserCredential, SyncFrom: syncFrom.Format("2006-01-02")})

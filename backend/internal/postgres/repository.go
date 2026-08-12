@@ -97,16 +97,16 @@ func (r *Repository) ListMerchantIDs(ctx context.Context) ([]domain.MerchantID, 
 	return out, rows.Err()
 }
 func (r *Repository) UpsertMerchantConnection(ctx context.Context, v domain.MerchantConnection) error {
-	_, err := r.DB.ExecContext(ctx, `INSERT INTO merchant_connections(merchant_id,session_ciphertext,browser_credential_ciphertext,status,last_synced_at,last_error,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(merchant_id) DO UPDATE SET session_ciphertext=EXCLUDED.session_ciphertext,browser_credential_ciphertext=EXCLUDED.browser_credential_ciphertext,status=EXCLUDED.status,last_synced_at=EXCLUDED.last_synced_at,last_error=EXCLUDED.last_error,updated_at=EXCLUDED.updated_at`, v.MerchantID, v.SessionCiphertext, v.BrowserCredentialCiphertext, v.Status, v.LastSyncedAt, v.LastError, v.UpdatedAt)
+	_, err := r.DB.ExecContext(ctx, `INSERT INTO merchant_connections(merchant_id,session_ciphertext,browser_credential_ciphertext,status,last_synced_at,history_backfilled_at,last_error,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(merchant_id) DO UPDATE SET session_ciphertext=EXCLUDED.session_ciphertext,browser_credential_ciphertext=EXCLUDED.browser_credential_ciphertext,status=EXCLUDED.status,last_synced_at=EXCLUDED.last_synced_at,history_backfilled_at=EXCLUDED.history_backfilled_at,last_error=EXCLUDED.last_error,updated_at=EXCLUDED.updated_at`, v.MerchantID, v.SessionCiphertext, v.BrowserCredentialCiphertext, v.Status, v.LastSyncedAt, v.HistoryBackfilledAt, v.LastError, v.UpdatedAt)
 	return err
 }
 func (r *Repository) MerchantConnection(ctx context.Context, id string) (domain.MerchantConnection, error) {
 	var v domain.MerchantConnection
-	err := r.DB.QueryRowContext(ctx, `SELECT merchant_id,session_ciphertext,browser_credential_ciphertext,status,last_synced_at,last_error,updated_at FROM merchant_connections WHERE merchant_id=$1`, id).Scan(&v.MerchantID, &v.SessionCiphertext, &v.BrowserCredentialCiphertext, &v.Status, &v.LastSyncedAt, &v.LastError, &v.UpdatedAt)
+	err := r.DB.QueryRowContext(ctx, `SELECT merchant_id,session_ciphertext,browser_credential_ciphertext,status,last_synced_at,history_backfilled_at,last_error,updated_at FROM merchant_connections WHERE merchant_id=$1`, id).Scan(&v.MerchantID, &v.SessionCiphertext, &v.BrowserCredentialCiphertext, &v.Status, &v.LastSyncedAt, &v.HistoryBackfilledAt, &v.LastError, &v.UpdatedAt)
 	return v, notFound(err)
 }
 func (r *Repository) ListDueMerchantConnections(ctx context.Context, due time.Time, limit int) ([]domain.MerchantConnection, error) {
-	rows, err := r.DB.QueryContext(ctx, `SELECT merchant_id,session_ciphertext,browser_credential_ciphertext,status,last_synced_at,last_error,updated_at FROM merchant_connections WHERE status IN ('connected','reconnect_required') AND last_error <> 'Manual browser login in progress' AND GREATEST(COALESCE(last_synced_at,updated_at),updated_at) <= $1 ORDER BY updated_at LIMIT $2`, due, limit)
+	rows, err := r.DB.QueryContext(ctx, `SELECT merchant_id,session_ciphertext,browser_credential_ciphertext,status,last_synced_at,history_backfilled_at,last_error,updated_at FROM merchant_connections WHERE status IN ('connected','reconnect_required') AND last_error <> 'Manual browser login in progress' AND GREATEST(COALESCE(last_synced_at,updated_at),updated_at) <= $1 ORDER BY updated_at LIMIT $2`, due, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +114,7 @@ func (r *Repository) ListDueMerchantConnections(ctx context.Context, due time.Ti
 	out := []domain.MerchantConnection{}
 	for rows.Next() {
 		var v domain.MerchantConnection
-		if err := rows.Scan(&v.MerchantID, &v.SessionCiphertext, &v.BrowserCredentialCiphertext, &v.Status, &v.LastSyncedAt, &v.LastError, &v.UpdatedAt); err != nil {
+		if err := rows.Scan(&v.MerchantID, &v.SessionCiphertext, &v.BrowserCredentialCiphertext, &v.Status, &v.LastSyncedAt, &v.HistoryBackfilledAt, &v.LastError, &v.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, v)

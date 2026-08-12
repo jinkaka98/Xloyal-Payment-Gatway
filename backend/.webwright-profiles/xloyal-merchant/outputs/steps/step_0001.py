@@ -18,11 +18,25 @@ await page.goto("https://merchant.qris.interactive.co.id/v2/m/kontenr.php?idir=p
 await page.wait_for_load_state("networkidle", timeout=15000)
 start_date = "2026-08-12"
 end_date = "2026-08-12"
-date_inputs = page.locator("input[type='date']")
-if start_date and end_date and await date_inputs.count() >= 2:
-    await date_inputs.nth(0).fill(start_date)
-    await date_inputs.nth(1).fill(end_date)
-    submit = page.locator("button[type='submit'], input[type='submit']")
+start_display = "/".join(reversed(start_date.split("-")))
+end_display = "/".join(reversed(end_date.split("-")))
+if start_date and end_date:
+    inputs = page.locator("input")
+    for index in range(await inputs.count()):
+        candidate = inputs.nth(index)
+        placeholder = (await candidate.get_attribute("placeholder") or "").lower()
+        value = await candidate.input_value()
+        if "tanggal" in placeholder or "tanggal" in value.lower() or " - " in value:
+            await candidate.fill(f"{start_display} - {end_display}")
+            break
+    numeric_inputs = page.locator("input[type='number'], input[inputmode='numeric']")
+    for index in range(await numeric_inputs.count()):
+        candidate = numeric_inputs.nth(index)
+        value = await candidate.input_value()
+        if value in ("10", "", "5"):
+            await candidate.fill("300")
+            break
+    submit = page.get_by_role("button", name="Tampilkan Hasil")
     if await submit.count():
         await submit.first.click()
         await page.wait_for_load_state("networkidle", timeout=15000)

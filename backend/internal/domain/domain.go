@@ -81,6 +81,7 @@ type MerchantConnection struct {
 	BrowserCredentialCiphertext string           `json:"-"`
 	Status                      ConnectionStatus `json:"status"`
 	LastSyncedAt                *time.Time       `json:"last_synced_at,omitempty"`
+	HistoryBackfilledAt         *time.Time       `json:"history_backfilled_at,omitempty"`
 	LastError                   string           `json:"last_error,omitempty"`
 	UpdatedAt                   time.Time        `json:"updated_at"`
 }

@@ -85,6 +85,9 @@ func (w Worker) syncMerchants(ctx context.Context, now time.Time) error {
 			_ = w.Repo.CreatePortalTransaction(ctx, transaction)
 		}
 		connection.LastSyncedAt = &now
+		if connection.HistoryBackfilledAt == nil {
+			connection.HistoryBackfilledAt = &now
+		}
 		connection.LastError = ""
 		connection.Status = domain.ConnectionConnected
 		connection.UpdatedAt = now
