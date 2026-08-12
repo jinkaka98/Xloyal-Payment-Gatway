@@ -3,17 +3,9 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, Building2, FileClock, FileText, FlaskConical, LayoutDashboard, LogOut, Menu, Store, X } from "lucide-react";
+import { Cable, FileClock, FlaskConical, LayoutDashboard, LogOut, Menu, QrCode, ReceiptText, Settings2, UsersRound, X } from "lucide-react";
 
-const nav = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/tenants", label: "Tenants", icon: Building2 },
-  { href: "/merchant-accounts", label: "Merchant accounts", icon: Store },
-  { href: "/invoices", label: "Invoices", icon: FileText },
-  { href: "/qris-test", label: "QRIS test lab", icon: FlaskConical },
-  { href: "/audit-logs", label: "Audit logs", icon: FileClock },
-  { href: "/health", label: "System health", icon: Activity },
-];
+const nav = [{ label: "Merchant", items: [{ href: "/merchant-ids", label: "Tenant ID", icon: UsersRound }, { href: "/merchant-transactions", label: "Transaksi Merchant", icon: ReceiptText }] }, { label: "QRIS Control", items: [{ href: "/qris-control", label: "QRIS Control", icon: QrCode }, { href: "/qris-test", label: "QRIS Test Transaksi", icon: FlaskConical }, { href: "/merchant-connecting", label: "Merchant Connecting", icon: Cable }, { href: "/global-transactions", label: "Global Log Transaksi", icon: FileClock }, { href: "/health", label: "System Health", icon: Settings2 }] }];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -28,11 +20,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div><strong>Xloyal</strong><span>Payment operations</span></div>
           <button className="sidebar-close icon-button" aria-label="Close navigation" onClick={() => setOpen(false)}><X size={18} /></button>
         </div>
-        <nav aria-label="Primary navigation">
-          {nav.map(({ href, label, icon: Icon }) => {
-            const active = pathname === href || pathname.startsWith(`${href}/`);
-            return <Link key={href} href={href} className={active ? "nav-link active" : "nav-link"} onClick={() => setOpen(false)} aria-current={active ? "page" : undefined}><Icon size={18} /><span>{label}</span></Link>;
-          })}
+        <nav aria-label="Primary navigation"><Link href="/dashboard" className={pathname === "/dashboard" ? "nav-link active" : "nav-link"}><LayoutDashboard size={18} /><span>Dashboard QRIS</span></Link>
+          {nav.map((group) => <div key={group.label} className="nav-group"><span>{group.label}</span>{group.items.map(({ href, label, icon: Icon }) => { const active = pathname === href || pathname.startsWith(`${href}/`); return <Link key={href} href={href} className={active ? "nav-link active" : "nav-link"} onClick={() => setOpen(false)} aria-current={active ? "page" : undefined}><Icon size={18} /><span>{label}</span></Link>; })}</div>)}
         </nav>
         <div className="sidebar-account">
           <div className="avatar">AR</div>

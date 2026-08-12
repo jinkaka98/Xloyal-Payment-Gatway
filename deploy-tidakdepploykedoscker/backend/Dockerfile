@@ -15,9 +15,11 @@ ENV HTTP_ADDR=:8080
 USER nobody
 ENTRYPOINT ["api"]
 
-FROM alpine:3.21 AS worker
+FROM node:22-alpine AS worker
 RUN apk add --no-cache ca-certificates
 COPY --from=build /out/worker /usr/local/bin/worker
-USER nobody
+COPY --chown=node:node backend/tools/camofox_browser_checker.mjs /app/camofox_browser_checker.mjs
+ENV CAMOUFOX_CHECKER_CMD="node /app/camofox_browser_checker.mjs"
+USER node
 ENTRYPOINT ["worker"]
 

@@ -1,0 +1,6 @@
+{
+  "/(admin)/dashboard/page": "app/(admin)/dashboard/page.js",
+  "/(admin)/global-transactions/page": "app/(admin)/global-transactions/page.js",
+  "/(admin)/merchant-connecting/page": "app/(admin)/merchant-connecting/page.js",
+  "/(admin)/qris-test/page": "app/(admin)/qris-test/page.js"
+}

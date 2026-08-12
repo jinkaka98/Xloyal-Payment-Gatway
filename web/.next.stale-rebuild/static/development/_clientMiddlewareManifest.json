@@ -1,0 +1,50 @@
+[
+  {
+    "regexp": "^(?:\\/(_next\\/data\\/[^/]{1,}))?\\/dashboard(?:\\/((?:[^\\/#\\?]+?)(?:\\/(?:[^\\/#\\?]+?))*))?(\\\\.json)?[\\/#\\?]?$",
+    "originalSource": "/dashboard/:path*"
+  },
+  {
+    "regexp": "^(?:\\/(_next\\/data\\/[^/]{1,}))?\\/tenants(?:\\/((?:[^\\/#\\?]+?)(?:\\/(?:[^\\/#\\?]+?))*))?(\\\\.json)?[\\/#\\?]?$",
+    "originalSource": "/tenants/:path*"
+  },
+  {
+    "regexp": "^(?:\\/(_next\\/data\\/[^/]{1,}))?\\/merchant-accounts(?:\\/((?:[^\\/#\\?]+?)(?:\\/(?:[^\\/#\\?]+?))*))?(\\\\.json)?[\\/#\\?]?$",
+    "originalSource": "/merchant-accounts/:path*"
+  },
+  {
+    "regexp": "^(?:\\/(_next\\/data\\/[^/]{1,}))?\\/merchant-ids(?:\\/((?:[^\\/#\\?]+?)(?:\\/(?:[^\\/#\\?]+?))*))?(\\\\.json)?[\\/#\\?]?$",
+    "originalSource": "/merchant-ids/:path*"
+  },
+  {
+    "regexp": "^(?:\\/(_next\\/data\\/[^/]{1,}))?\\/merchant-transactions(?:\\/((?:[^\\/#\\?]+?)(?:\\/(?:[^\\/#\\?]+?))*))?(\\\\.json)?[\\/#\\?]?$",
+    "originalSource": "/merchant-transactions/:path*"
+  },
+  {
+    "regexp": "^(?:\\/(_next\\/data\\/[^/]{1,}))?\\/merchant-connecting(?:\\/((?:[^\\/#\\?]+?)(?:\\/(?:[^\\/#\\?]+?))*))?(\\\\.json)?[\\/#\\?]?$",
+    "originalSource": "/merchant-connecting/:path*"
+  },
+  {
+    "regexp": "^(?:\\/(_next\\/data\\/[^/]{1,}))?\\/qris-control(?:\\/((?:[^\\/#\\?]+?)(?:\\/(?:[^\\/#\\?]+?))*))?(\\\\.json)?[\\/#\\?]?$",
+    "originalSource": "/qris-control/:path*"
+  },
+  {
+    "regexp": "^(?:\\/(_next\\/data\\/[^/]{1,}))?\\/global-transactions(?:\\/((?:[^\\/#\\?]+?)(?:\\/(?:[^\\/#\\?]+?))*))?(\\\\.json)?[\\/#\\?]?$",
+    "originalSource": "/global-transactions/:path*"
+  },
+  {
+    "regexp": "^(?:\\/(_next\\/data\\/[^/]{1,}))?\\/invoices(?:\\/((?:[^\\/#\\?]+?)(?:\\/(?:[^\\/#\\?]+?))*))?(\\\\.json)?[\\/#\\?]?$",
+    "originalSource": "/invoices/:path*"
+  },
+  {
+    "regexp": "^(?:\\/(_next\\/data\\/[^/]{1,}))?\\/qris-test(?:\\/((?:[^\\/#\\?]+?)(?:\\/(?:[^\\/#\\?]+?))*))?(\\\\.json)?[\\/#\\?]?$",
+    "originalSource": "/qris-test/:path*"
+  },
+  {
+    "regexp": "^(?:\\/(_next\\/data\\/[^/]{1,}))?\\/audit-logs(?:\\/((?:[^\\/#\\?]+?)(?:\\/(?:[^\\/#\\?]+?))*))?(\\\\.json)?[\\/#\\?]?$",
+    "originalSource": "/audit-logs/:path*"
+  },
+  {
+    "regexp": "^(?:\\/(_next\\/data\\/[^/]{1,}))?\\/health(?:\\/((?:[^\\/#\\?]+?)(?:\\/(?:[^\\/#\\?]+?))*))?(\\\\.json)?[\\/#\\?]?$",
+    "originalSource": "/health/:path*"
+  }
+]

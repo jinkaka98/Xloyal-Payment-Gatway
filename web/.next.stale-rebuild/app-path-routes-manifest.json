@@ -1,0 +1,21 @@
+{
+  "/_not-found/page": "/_not-found",
+  "/api/logout/route": "/api/logout",
+  "/api/admin/[...path]/route": "/api/admin/[...path]",
+  "/api/qris/[...path]/route": "/api/qris/[...path]",
+  "/login/page": "/login",
+  "/page": "/",
+  "/(admin)/health/page": "/health",
+  "/(admin)/audit-logs/page": "/audit-logs",
+  "/(admin)/invoices/[id]/page": "/invoices/[id]",
+  "/(admin)/dashboard/page": "/dashboard",
+  "/(admin)/merchant-accounts/page": "/merchant-accounts",
+  "/(admin)/global-transactions/page": "/global-transactions",
+  "/(admin)/merchant-ids/page": "/merchant-ids",
+  "/(admin)/invoices/page": "/invoices",
+  "/(admin)/merchant-transactions/page": "/merchant-transactions",
+  "/(admin)/qris-test/page": "/qris-test",
+  "/(admin)/qris-control/page": "/qris-control",
+  "/(admin)/merchant-connecting/page": "/merchant-connecting",
+  "/(admin)/tenants/page": "/tenants"
+}

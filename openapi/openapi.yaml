@@ -35,6 +35,28 @@
         }
       }
     },
+    "/v1/tenants/{tenant_id}/transactions/refresh": {
+      "post": {
+        "tags": ["Public"], "operationId": "refreshTenantTransactions", "security": [{"ApiKey": []}],
+        "parameters": [{"$ref": "#/components/parameters/TenantId"}],
+        "responses": {"202": {"description": "Browser history refresh queued", "content": {"application/json": {"schema": {"type": "object", "required": ["status", "tenant_id", "merchant_id", "poll_url"], "properties": {"status": {"const": "queued"}, "tenant_id": {"type": "string"}, "merchant_id": {"type": "string"}, "poll_url": {"type": "string"}}}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/v1/tenants/{tenant_id}/transactions": {
+      "get": {
+        "tags": ["Public"], "operationId": "listTenantTransactions", "security": [{"ApiKey": []}],
+        "parameters": [{"$ref": "#/components/parameters/TenantId"}, {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}],
+        "responses": {"200": {"description": "Matched portal transactions for this tenant", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/PortalTransaction"}}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/v1/tenants/{tenant_id}/qris/dynamic": {
+      "post": {
+        "tags": ["Public"], "operationId": "createTenantDynamicQRIS", "security": [{"ApiKey": []}],
+        "parameters": [{"$ref": "#/components/parameters/TenantId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["template_id", "amount"], "properties": {"template_id": {"type": "string"}, "amount": {"type": "integer", "format": "int64", "minimum": 1, "maximum": 100000000}}}}}},
+        "responses": {"201": {"description": "Dynamic QRIS payload and PNG", "content": {"application/json": {"schema": {"type": "object", "required": ["tenant_id", "template_id", "amount", "currency", "qr_payload", "qr_png_base64", "created_at"], "properties": {"tenant_id": {"type": "string"}, "template_id": {"type": "string"}, "amount": {"type": "integer", "format": "int64"}, "currency": {"const": "IDR"}, "qr_payload": {"type": "string"}, "qr_png_base64": {"type": "string", "contentEncoding": "base64"}, "created_at": {"type": "string", "format": "date-time"}}}}}}, "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
     "/v1/invoices/{invoice_id}": {
       "get": {
         "tags": ["Public"], "operationId": "getInvoice", "security": [{"ApiKey": []}],
@@ -64,7 +86,15 @@
       "post": {
         "tags": ["Admin"], "operationId": "createTenant", "security": [{"AdminBearer": []}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateTenant"}}}},
-        "responses": {"201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Tenant"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/Problem"}}
+        "responses": {"201": {"description": "Created; API key is returned once", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantCredential"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/admin/tenants/{id}": {
+      "put": {
+        "tags": ["Admin"], "operationId": "updateTenant", "security": [{"AdminBearer": []}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateTenant"}}}},
+        "responses": {"200": {"description": "Updated tenant", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Tenant"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
       }
     },
     "/admin/merchant-accounts": {
@@ -112,7 +142,7 @@
     "/admin/health": {
       "get": {
         "tags": ["Admin"], "operationId": "adminHealth", "security": [{"AdminBearer": []}],
-        "responses": {"200": {"description": "Database and provider health", "content": {"application/json": {"schema": {"type": "array", "items": {"type": "object"}}}}}, "403": {"$ref": "#/components/responses/Problem"}}
+        "responses": {"200": {"description": "Backend, database, provider API, and merchant browser-session health", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/HealthCheck"}}}}}, "403": {"$ref": "#/components/responses/Problem"}}
       }
     },
     "/admin/qris-templates": {
@@ -122,7 +152,7 @@
       },
       "post": {
         "tags": ["Admin"], "operationId": "createQRISTemplate", "security": [{"AdminBearer": []}],
-        "requestBody": {"required": true, "content": {"multipart/form-data": {"schema": {"type": "object", "required": ["image"], "properties": {"name": {"type": "string"}, "image": {"type": "string", "contentEncoding": "binary"}}}}}},
+        "requestBody": {"required": true, "content": {"multipart/form-data": {"schema": {"type": "object", "required": ["image"], "properties": {"name": {"type": "string"}, "tenant_id": {"type": "string"}, "access_scope": {"type": "string", "enum": ["all_tenants", "selected_tenant"]}, "static_to_dynamic": {"type": "boolean"}, "max_requests_per_minute": {"type": "integer", "minimum": 1, "maximum": 10000}, "image": {"type": "string", "contentEncoding": "binary"}}}}}},
         "responses": {"201": {"description": "Decoded and stored template", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QRISTemplate"}}}}, "400": {"$ref": "#/components/responses/Problem"}}
       }
     },
@@ -133,6 +163,21 @@
         "responses": {"200": {"description": "Original uploaded QRIS image", "content": {"image/png": {"schema": {"type": "string", "contentEncoding": "binary"}}, "image/jpeg": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "404": {"$ref": "#/components/responses/Problem"}}
       }
     },
+    "/admin/global-transactions": {
+      "get": {
+        "tags": ["Admin"], "operationId": "listGlobalTransactions", "security": [{"AdminBearer": []}],
+        "parameters": [{"$ref": "#/components/parameters/TenantFilter"}, {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}],
+        "responses": {"200": {"description": "Merchant history and QRIS Test validation lifecycle", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/GlobalTransactionLog"}}}}}, "403": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/admin/qris-templates/{id}": {
+      "put": {
+        "tags": ["Admin"], "operationId": "updateQRISTemplate", "security": [{"AdminBearer": []}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["name", "access_scope", "static_to_dynamic", "max_requests_per_minute", "active"], "properties": {"name": {"type": "string"}, "tenant_id": {"type": "string"}, "access_scope": {"type": "string", "enum": ["all_tenants", "selected_tenant"]}, "static_to_dynamic": {"type": "boolean"}, "max_requests_per_minute": {"type": "integer", "minimum": 1, "maximum": 10000}, "active": {"type": "boolean"}}}}}},
+        "responses": {"200": {"description": "Updated QRIS template", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QRISTemplate"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
     "/admin/qris-test-payments": {
       "get": {
         "tags": ["Admin"], "operationId": "listQRISTestPayments", "security": [{"AdminBearer": []}],
@@ -141,7 +186,7 @@
       "post": {
         "tags": ["Admin"], "operationId": "createQRISTestPayment", "security": [{"AdminBearer": []}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["qris_template_id", "amount"], "properties": {"qris_template_id": {"type": "string"}, "amount": {"type": "integer", "minimum": 1, "maximum": 100000000}}}}}},
-        "responses": {"201": {"description": "Dynamic QRIS test payment", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TestPayment"}}}}, "400": {"$ref": "#/components/responses/Problem"}}
+        "responses": {"201": {"description": "Dynamic QRIS test payment", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TestPayment"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}}
       }
     },
     "/admin/qris-test-payments/{id}/qr": {
@@ -174,6 +219,19 @@
     },
     "schemas": {
       "Problem": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}},
+      "HealthCheck": {
+        "type": "object",
+        "required": ["id", "name", "kind", "status", "latency_ms", "last_checked_at", "message"],
+        "properties": {
+          "id": {"type": "string"}, "name": {"type": "string"},
+          "kind": {"type": "string", "enum": ["backend_api", "database", "browser_session", "provider_api"]},
+          "status": {"type": "string", "enum": ["operational", "degraded", "offline"]},
+          "latency_ms": {"type": "integer", "minimum": 0}, "endpoint": {"type": "string"},
+          "last_checked_at": {"type": "string", "format": "date-time"}, "last_connected_at": {"type": "string", "format": "date-time"},
+          "last_synced_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"},
+          "message": {"type": "string"}
+        }
+      },
       "CreateInvoice": {
         "type": "object", "additionalProperties": false, "required": ["merchant_account_id", "amount"],
         "properties": {
@@ -183,13 +241,13 @@
         "anyOf": [{"required": ["idempotency_key"]}, {"description": "Idempotency-Key header is supplied."}]
       },
       "CreateTenant": {
-        "type": "object", "additionalProperties": false, "required": ["id", "name", "api_key"],
-        "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "api_key": {"type": "string", "minLength": 24, "writeOnly": true}}
+        "type": "object", "additionalProperties": false, "required": ["name", "merchant_id"],
+        "properties": {"name": {"type": "string"}, "merchant_id": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}}
       },
       "CreateMerchantAccount": {
         "type": "object", "additionalProperties": false, "required": ["id", "tenant_id", "provider", "name", "credential"],
         "properties": {
-          "id": {"type": "string"}, "tenant_id": {"type": "string"}, "provider": {"type": "string", "const": "openapi"}, "name": {"type": "string"},
+          "id": {"type": "string"}, "tenant_id": {"type": "string"}, "provider": {"type": "string", "const": "interactive_qris"}, "name": {"type": "string"},
           "credential": {
             "type": "object", "writeOnly": true, "additionalProperties": false,
             "required": ["base_url", "merchant_id", "api_key"],
@@ -202,7 +260,19 @@
       },
       "Tenant": {
         "type": "object", "required": ["id", "name", "active", "created_at"],
-        "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "active": {"type": "boolean"}, "created_at": {"type": "string", "format": "date-time"}}
+        "properties": {"id": {"type": "string"}, "merchant_id": {"type": "string"}, "name": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}, "active": {"type": "boolean"}, "created_at": {"type": "string", "format": "date-time"}}
+      },
+      "UpdateTenant": {
+        "type": "object", "additionalProperties": false, "required": ["name", "merchant_id", "site_url", "callback_url", "webhook_url", "active"],
+        "properties": {"name": {"type": "string"}, "merchant_id": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}, "active": {"type": "boolean"}}
+      },
+      "TenantCredential": {
+        "type": "object", "required": ["tenant", "api_key", "api_key_visible_once"],
+        "properties": {"tenant": {"$ref": "#/components/schemas/Tenant"}, "api_key": {"type": "string", "writeOnly": true}, "api_key_visible_once": {"const": true}}
+      },
+      "PortalTransaction": {
+        "type": "object", "required": ["id", "merchant_id", "reference", "amount", "status", "paid_at", "source", "match_confidence", "created_at"],
+        "properties": {"id": {"type": "string"}, "merchant_id": {"type": "string"}, "tenant_id": {"type": "string"}, "reference": {"type": "string"}, "amount": {"type": "integer", "format": "int64"}, "status": {"type": "string"}, "paid_at": {"type": "string", "format": "date-time"}, "source": {"type": "string"}, "match_confidence": {"type": "string"}, "invoice_id": {"type": "string"}, "created_at": {"type": "string", "format": "date-time"}}
       },
       "MerchantAccount": {
         "type": "object", "required": ["id", "tenant_id", "provider", "name", "active", "created_at"],
@@ -221,18 +291,31 @@
         }
       },
       "QRISTemplate": {
-        "type": "object", "required": ["id", "name", "image_mime", "merchant_name", "merchant_city", "created_at"],
+        "type": "object", "required": ["id", "name", "image_mime", "merchant_name", "merchant_city", "access_scope", "static_to_dynamic", "max_requests_per_minute", "active", "created_at"],
         "properties": {
-          "id": {"type": "string"}, "name": {"type": "string"}, "image_mime": {"type": "string"},
-          "merchant_name": {"type": "string"}, "merchant_city": {"type": "string"}, "created_at": {"type": "string", "format": "date-time"}
+          "id": {"type": "string"}, "tenant_id": {"type": "string"}, "name": {"type": "string"}, "image_mime": {"type": "string"},
+          "merchant_name": {"type": "string"}, "merchant_city": {"type": "string"}, "access_scope": {"type": "string", "enum": ["all_tenants", "selected_tenant"]}, "static_to_dynamic": {"type": "boolean"}, "max_requests_per_minute": {"type": "integer"}, "active": {"type": "boolean"}, "created_at": {"type": "string", "format": "date-time"}
         }
       },
       "TestPayment": {
-        "type": "object", "required": ["id", "qris_template_id", "amount", "dynamic_payload", "status", "created_at", "expires_at"],
+        "type": "object", "required": ["id", "qris_template_id", "merchant_id", "amount", "dynamic_payload", "status", "request_source", "match_confidence", "created_at", "updated_at", "expires_at", "check_count"],
         "properties": {
-          "id": {"type": "string"}, "qris_template_id": {"type": "string"}, "amount": {"type": "integer", "format": "int64"},
+          "id": {"type": "string"}, "qris_template_id": {"type": "string"}, "merchant_id": {"type": "string"}, "tenant_id": {"type": "string"}, "amount": {"type": "integer", "format": "int64"},
           "dynamic_payload": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]},
-          "created_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"}
+          "request_source": {"type": "string"}, "match_confidence": {"type": "string"}, "matched_transaction_id": {"type": "string"},
+          "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
+          "last_checked_at": {"type": ["string", "null"], "format": "date-time"}, "check_count": {"type": "integer", "minimum": 0}
+        }
+      },
+      "GlobalTransactionLog": {
+        "type": "object", "required": ["id", "event_type", "reference", "amount", "status", "event_at", "source", "request_source", "validation", "check_count"],
+        "properties": {
+          "id": {"type": "string"}, "event_type": {"type": "string", "enum": ["merchant_transaction", "qris_test_check"]},
+          "merchant_id": {"type": "string"}, "tenant_id": {"type": "string"}, "reference": {"type": "string"}, "amount": {"type": "integer", "format": "int64"},
+          "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]}, "event_at": {"type": "string", "format": "date-time"},
+          "source": {"type": "string"}, "request_source": {"type": "string"}, "validation": {"type": "string"},
+          "expires_at": {"type": "string", "format": "date-time"}, "last_checked_at": {"type": "string", "format": "date-time"}, "next_check_at": {"type": "string", "format": "date-time"},
+          "check_count": {"type": "integer", "minimum": 0}, "invoice_id": {"type": "string"}, "test_payment_id": {"type": "string"}, "matched_transaction_id": {"type": "string"}
         }
       },
       "AuditEvent": {

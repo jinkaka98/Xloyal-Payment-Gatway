@@ -10,6 +10,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"xloyal/backend/internal/checker"
 	"xloyal/backend/internal/domain"
 	"xloyal/backend/internal/gateway"
 	"xloyal/backend/internal/postgres"
@@ -18,10 +19,11 @@ import (
 )
 
 type App struct {
-	DB      *sql.DB
-	Repo    *postgres.Repository
-	Cipher  *security.Cipher
-	Gateway gateway.Service
+	DB           *sql.DB
+	Repo         *postgres.Repository
+	Cipher       *security.Cipher
+	Gateway      gateway.Service
+	MerchantSync func(context.Context, domain.MerchantConnection) ([]domain.PortalTransaction, error)
 }
 
 func Open() (*App, error) {
@@ -51,8 +53,8 @@ func Open() (*App, error) {
 	}
 	repo := postgres.New(db)
 	resolve := func(_ context.Context, m domain.MerchantAccount) (domain.PaymentProvider, error) {
-		if m.Provider != "openapi" {
-			return nil, errors.New("unsupported payment provider")
+		if m.Provider != provider.InteractiveQRISProvider {
+			return nil, errors.New("unsupported payment provider; use interactive_qris")
 		}
 		plain, err := cipher.Decrypt(m.CredentialCiphertext)
 		if err != nil {
@@ -65,5 +67,9 @@ func Open() (*App, error) {
 		return provider.NewOpenAPI(cfg)
 	}
 	g := gateway.Service{Repo: repo, Provider: resolve}
-	return &App{DB: db, Repo: repo, Cipher: cipher, Gateway: g}, nil
+	var merchantSync func(context.Context, domain.MerchantConnection) ([]domain.PortalTransaction, error)
+	if os.Getenv("CAMOUFOX_CHECKER_CMD") != "" {
+		merchantSync = checker.CommandRunner(os.Getenv("CAMOUFOX_CHECKER_CMD"), cipher)
+	}
+	return &App{DB: db, Repo: repo, Cipher: cipher, Gateway: g, MerchantSync: merchantSync}, nil
 }

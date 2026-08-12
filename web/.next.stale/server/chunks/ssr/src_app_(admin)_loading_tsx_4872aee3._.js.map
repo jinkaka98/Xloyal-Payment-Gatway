@@ -1,0 +1,6 @@
+{
+  "version": 3,
+  "sources": [],
+  "sections": [
+    {"offset": {"line": 4, "column": 0}, "map": {"version":3,"sources":["file:///C:/Users/POWER-OF-MAGIC/Documents/GitHub/Xloyal-Payment-Gatway/web/src/app/%28admin%29/loading.tsx"],"sourcesContent":["export default function Loading() { return <div className=\"page\"><div className=\"skeleton skeleton-title\" /><div className=\"metric-grid\">{[1,2,3,4].map((item) => <div className=\"metric skeleton\" key={item} />)}</div><div className=\"skeleton skeleton-table\" /></div>; }\r\n"],"names":[],"mappings":";;;;;;AAAe,SAAS;IAAY,qBAAO,8OAAC;QAAI,WAAU;;0BAAO,8OAAC;gBAAI,WAAU;;;;;;0BAA4B,8OAAC;gBAAI,WAAU;0BAAe;oBAAC;oBAAE;oBAAE;oBAAE;iBAAE,CAAC,GAAG,CAAC,CAAC,qBAAS,8OAAC;wBAAI,WAAU;uBAAuB;;;;;;;;;;0BAAgB,8OAAC;gBAAI,WAAU;;;;;;;;;;;;AAAoC","debugId":null}}]
+}

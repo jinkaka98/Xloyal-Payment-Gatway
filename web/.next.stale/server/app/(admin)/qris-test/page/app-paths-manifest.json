@@ -1,0 +1,3 @@
+{
+  "/(admin)/qris-test/page": "app/(admin)/qris-test/page.js"
+}

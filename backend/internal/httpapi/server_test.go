@@ -70,6 +70,177 @@ func TestAdminRBAC(t *testing.T) {
 	}
 }
 
+func TestHARImportCreatesReconnectRequiredBrowserConnection(t *testing.T) {
+	repo := store.NewMemory()
+	c, _ := security.NewCipher(bytes.Repeat([]byte{1}, 32))
+	h := Server{Repo: repo, Cipher: c, AdminTokens: map[string]string{"admin": "operator"}}.Handler()
+
+	har := `{"log":{"pages":[{"title":"history"}],"entries":[{"request":{"url":"https://merchant.qris.interactive.co.id/v2/m/kontenr.php?idir=pages/historytrx.php"}}]}}`
+	imported := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/admin/merchant-connections/har", strings.NewReader(har))
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(imported, req)
+	if imported.Code != http.StatusOK || !strings.Contains(imported.Body.String(), `"merchant_id":"interactive-browser"`) || !strings.Contains(imported.Body.String(), `"session_required":true`) {
+		t.Fatalf("import code=%d body=%s", imported.Code, imported.Body.String())
+	}
+	connection, err := repo.MerchantConnection(context.Background(), "interactive-browser")
+	if err != nil || connection.Status != domain.ConnectionReconnectRequired {
+		t.Fatalf("connection=%+v err=%v", connection, err)
+	}
+}
+
+func TestSessionImportAcceptsChromeCookieExport(t *testing.T) {
+	repo := store.NewMemory()
+	c, _ := security.NewCipher(bytes.Repeat([]byte{1}, 32))
+	repo.CreateMerchantID(context.Background(), domain.MerchantID{ID: "merchant_1"})
+	repo.UpsertMerchantConnection(context.Background(), domain.MerchantConnection{MerchantID: "merchant_1", Status: domain.ConnectionReconnectRequired})
+	h := Server{Repo: repo, Cipher: c, AdminTokens: map[string]string{"admin": "operator"}}.Handler()
+	body := `[{"domain":"merchant.qris.interactive.co.id","hostOnly":true,"httpOnly":true,"name":"PHPSESSID","path":"/","sameSite":"lax","secure":true,"session":true,"storeId":null,"value":"session-value"}]`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/admin/merchant-ids/merchant_1/connection/session", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status":"connected"`) {
+		t.Fatalf("import code=%d body=%s", w.Code, w.Body.String())
+	}
+	connection, _ := repo.MerchantConnection(context.Background(), "merchant_1")
+	if connection.SessionCiphertext == "" || connection.Status != domain.ConnectionConnected {
+		t.Fatalf("connection=%+v", connection)
+	}
+}
+
+func TestReconnectRequiredCanQueueAutomaticConnection(t *testing.T) {
+	repo := store.NewMemory()
+	c, _ := security.NewCipher(bytes.Repeat([]byte{1}, 32))
+	now := time.Now().UTC()
+	repo.UpsertMerchantConnection(context.Background(), domain.MerchantConnection{MerchantID: "merchant_1", Status: domain.ConnectionReconnectRequired, LastError: "old error", UpdatedAt: now})
+	h := Server{Repo: repo, Cipher: c, AdminTokens: map[string]string{"admin": "operator"}}.Handler()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/admin/merchant-ids/merchant_1/sync", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("queue code=%d body=%s", w.Code, w.Body.String())
+	}
+	connection, _ := repo.MerchantConnection(context.Background(), "merchant_1")
+	if connection.Status != domain.ConnectionReconnectRequired || connection.LastError != "Browser connection queued" || !connection.UpdatedAt.Equal(time.Unix(0, 0).UTC()) {
+		t.Fatalf("connection=%+v", connection)
+	}
+}
+
+func TestCreateTenantGeneratesCredentialsAndPersistsConnectivity(t *testing.T) {
+	repo := store.NewMemory()
+	repo.CreateMerchantID(context.Background(), domain.MerchantID{ID: "interactive-browser", Name: "InterActive QRIS browser", Active: true})
+	h := Server{Repo: repo, AdminTokens: map[string]string{"admin": "super_admin"}}.Handler()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/admin/tenants", strings.NewReader(`{"name":"Website utama","merchant_id":"interactive-browser","site_url":"https://shop.example","callback_url":"https://shop.example/qris/callback","webhook_url":"https://shop.example/webhooks/qris"}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create code=%d body=%s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Tenant            domain.Tenant `json:"tenant"`
+		APIKey            string        `json:"api_key"`
+		APIKeyVisibleOnce bool          `json:"api_key_visible_once"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(response.Tenant.ID, "tenant_") || !strings.HasPrefix(response.APIKey, "xl_live_") || !response.APIKeyVisibleOnce {
+		t.Fatalf("generated response=%+v", response)
+	}
+	if response.Tenant.MerchantID != "interactive-browser" || response.Tenant.SiteURL != "https://shop.example" || response.Tenant.CallbackURL == "" || response.Tenant.WebhookURL == "" {
+		t.Fatalf("tenant=%+v", response.Tenant)
+	}
+	authenticated, err := repo.TenantByAPIKey(context.Background(), security.HashSecret(response.APIKey))
+	if err != nil || authenticated.ID != response.Tenant.ID {
+		t.Fatalf("generated API key did not authenticate: tenant=%+v err=%v", authenticated, err)
+	}
+	if strings.Contains(w.Body.String(), "api_key_hash") {
+		t.Fatalf("API key hash leaked: %s", w.Body.String())
+	}
+}
+
+func TestUpdateTenantKeepsAPIKeyAndChangesConnectivity(t *testing.T) {
+	repo := store.NewMemory()
+	ctx := context.Background()
+	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
+	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-b", Active: true})
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", MerchantID: "merchant-a", Name: "Old", APIKeyHash: security.HashSecret("tenant-key"), Active: true, CreatedAt: time.Now().UTC()})
+	h := Server{Repo: repo, AdminTokens: map[string]string{"admin": "super_admin"}}.Handler()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/admin/tenants/tenant-a", strings.NewReader(`{"name":"Updated tenant","merchant_id":"merchant-b","site_url":"https://new.example","callback_url":"","webhook_url":"https://new.example/qris","active":false}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"merchant_id":"merchant-b"`) || !strings.Contains(w.Body.String(), `"active":false`) {
+		t.Fatalf("update code=%d body=%s", w.Code, w.Body.String())
+	}
+	stored, err := repo.Tenant(ctx, "tenant-a")
+	if err != nil || stored.Name != "Updated tenant" || stored.SiteURL != "https://new.example" || stored.APIKeyHash != security.HashSecret("tenant-key") {
+		t.Fatalf("stored=%+v err=%v", stored, err)
+	}
+}
+
+func TestTenantRefreshAndTransactionHistoryAreIsolated(t *testing.T) {
+	repo := store.NewMemory()
+	ctx := context.Background()
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant_a", MerchantID: "merchant_a", APIKeyHash: security.HashSecret("key-a"), Active: true})
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant_b", MerchantID: "merchant_a", APIKeyHash: security.HashSecret("key-b"), Active: true})
+	repo.UpsertMerchantConnection(ctx, domain.MerchantConnection{MerchantID: "merchant_a", Status: domain.ConnectionConnected, UpdatedAt: time.Now().UTC()})
+	repo.CreatePortalTransaction(ctx, domain.PortalTransaction{ID: "tx-a", MerchantID: "merchant_a", TenantID: "tenant_a", Reference: "A", PaidAt: time.Now().UTC()})
+	repo.CreatePortalTransaction(ctx, domain.PortalTransaction{ID: "tx-b", MerchantID: "merchant_a", TenantID: "tenant_b", Reference: "B", PaidAt: time.Now().UTC()})
+	h := Server{Repo: repo}.Handler()
+
+	refresh := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant_a/transactions/refresh", nil)
+	req.Header.Set("X-API-Key", "key-a")
+	h.ServeHTTP(refresh, req)
+	if refresh.Code != http.StatusAccepted || !strings.Contains(refresh.Body.String(), `"status":"queued"`) {
+		t.Fatalf("refresh code=%d body=%s", refresh.Code, refresh.Body.String())
+	}
+	connection, _ := repo.MerchantConnection(ctx, "merchant_a")
+	if connection.LastError != "Tenant requested transaction refresh" || !connection.UpdatedAt.Equal(time.Unix(0, 0).UTC()) {
+		t.Fatalf("connection=%+v", connection)
+	}
+
+	history := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/tenants/tenant_a/transactions", nil)
+	req.Header.Set("X-API-Key", "key-a")
+	h.ServeHTTP(history, req)
+	if history.Code != http.StatusOK || !strings.Contains(history.Body.String(), `"reference":"A"`) || strings.Contains(history.Body.String(), `"reference":"B"`) {
+		t.Fatalf("history code=%d body=%s", history.Code, history.Body.String())
+	}
+
+	crossTenant := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant_b/transactions/refresh", nil)
+	req.Header.Set("X-API-Key", "key-a")
+	h.ServeHTTP(crossTenant, req)
+	if crossTenant.Code != http.StatusNotFound {
+		t.Fatalf("cross-tenant code=%d body=%s", crossTenant.Code, crossTenant.Body.String())
+	}
+}
+
+func TestAdminHealthIncludesCoreAndMerchantBrowserConnection(t *testing.T) {
+	repo := store.NewMemory()
+	now := time.Now().UTC().Truncate(time.Second)
+	repo.CreateMerchantID(context.Background(), domain.MerchantID{ID: "merchant_1", Name: "Merchant browser", Active: true})
+	repo.UpsertMerchantConnection(context.Background(), domain.MerchantConnection{MerchantID: "merchant_1", Status: domain.ConnectionConnected, LastSyncedAt: &now, UpdatedAt: now})
+	h := Server{Repo: repo, AdminTokens: map[string]string{"view": "viewer"}}.Handler()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/admin/health", nil)
+	req.Header.Set("Authorization", "Bearer view")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("health code=%d body=%s", w.Code, w.Body.String())
+	}
+	for _, expected := range []string{`"id":"backend-api"`, `"kind":"database"`, `"id":"browser-merchant_1"`, `"kind":"browser_session"`, `"status":"operational"`, `"last_synced_at":"`} {
+		if !strings.Contains(w.Body.String(), expected) {
+			t.Fatalf("health response missing %s: %s", expected, w.Body.String())
+		}
+	}
+}
+
 func TestAdminListLimit(t *testing.T) {
 	r := store.NewMemory()
 	ctx := context.Background()
@@ -119,6 +290,8 @@ func TestAdminQRISTestWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := store.NewMemory()
+	repo.CreateMerchantID(context.Background(), domain.MerchantID{ID: "merchant-test", InteractiveMerchantID: "interactive-test", Name: "Test merchant", Active: true})
+	repo.UpsertMerchantConnection(context.Background(), domain.MerchantConnection{MerchantID: "merchant-test", Status: domain.ConnectionConnected, UpdatedAt: time.Now().UTC()})
 	h := Server{Repo: repo, AdminTokens: map[string]string{"admin": "super_admin"}}.Handler()
 	upload := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/admin/qris-templates", &body)
@@ -136,7 +309,94 @@ func TestAdminQRISTestWorkflow(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/admin/qris-test-payments", strings.NewReader(`{"qris_template_id":"`+template.ID+`","amount":50000}`))
 	req.Header.Set("Authorization", "Bearer admin")
 	h.ServeHTTP(create, req)
-	if create.Code != http.StatusCreated || !strings.Contains(create.Body.String(), `"status":"pending"`) || !strings.Contains(create.Body.String(), "540550000") {
+	if create.Code != http.StatusCreated || !strings.Contains(create.Body.String(), `"status":"pending"`) || !strings.Contains(create.Body.String(), `"merchant_id":"merchant-test"`) || !strings.Contains(create.Body.String(), `"match_confidence":"waiting_first_check"`) || !strings.Contains(create.Body.String(), "540550000") || !strings.Contains(create.Body.String(), `"next_check_at"`) {
 		t.Fatalf("payment code=%d body=%s", create.Code, create.Body.String())
+	}
+	connection, _ := repo.MerchantConnection(context.Background(), "merchant-test")
+	if connection.LastError != "" || connection.UpdatedAt.Equal(time.Unix(0, 0).UTC()) {
+		t.Fatalf("connection=%+v", connection)
+	}
+}
+
+func TestGlobalTransactionsIncludeExpiredQRISTestCheck(t *testing.T) {
+	repo := store.NewMemory()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-global"})
+	repo.CreateTestPayment(ctx, domain.TestPayment{
+		ID: "test-global", QRISTemplateID: "template-global", MerchantID: "merchant-global",
+		Amount: 12500, Status: domain.InvoicePending, RequestSource: "admin_qris_test",
+		MatchConfidence: "browser_sync_queued", CreatedAt: now.Add(-31 * time.Minute),
+		UpdatedAt: now.Add(-31 * time.Minute), ExpiresAt: now.Add(-time.Minute),
+	})
+	h := Server{Repo: repo, AdminTokens: map[string]string{"admin": "viewer"}}.Handler()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/admin/global-transactions?limit=10", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"event_type":"qris_test_check"`) || !strings.Contains(w.Body.String(), `"status":"expired"`) || !strings.Contains(w.Body.String(), `"validation":"expired_no_match"`) || !strings.Contains(w.Body.String(), `"expires_at"`) {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestTenantCanGenerateDynamicQRISOnlyFromOwnedEnabledTemplate(t *testing.T) {
+	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
+	repo := store.NewMemory()
+	ctx := context.Background()
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", APIKeyHash: security.HashSecret("key-a"), Active: true})
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-b", APIKeyHash: security.HashSecret("key-b"), Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-a", TenantID: "tenant-a", AccessScope: "selected_tenant", Name: "Store", StaticPayload: staticPayload, StaticToDynamic: true, MaxRequestsPM: 1, Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-all", AccessScope: "all_tenants", Name: "Shared", StaticPayload: staticPayload, StaticToDynamic: true, MaxRequestsPM: 60, Active: true})
+	h := Server{Repo: repo}.Handler()
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-a/qris/dynamic", strings.NewReader(`{"template_id":"template-a","amount":50000}`))
+	req.Header.Set("X-API-Key", "key-a")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"qr_payload":"000201010212`) || !strings.Contains(w.Body.String(), `"qr_png_base64":"`) || !strings.Contains(w.Body.String(), `"amount":50000`) {
+		t.Fatalf("generate code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	isolated := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-b/qris/dynamic", strings.NewReader(`{"template_id":"template-a","amount":50000}`))
+	req.Header.Set("X-API-Key", "key-b")
+	h.ServeHTTP(isolated, req)
+	if isolated.Code != http.StatusNotFound {
+		t.Fatalf("cross tenant code=%d body=%s", isolated.Code, isolated.Body.String())
+	}
+
+	limited := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-a/qris/dynamic", strings.NewReader(`{"template_id":"template-a","amount":50000}`))
+	req.Header.Set("X-API-Key", "key-a")
+	h.ServeHTTP(limited, req)
+	if limited.Code != http.StatusTooManyRequests || limited.Header().Get("Retry-After") == "" {
+		t.Fatalf("rate limit code=%d retry=%s body=%s", limited.Code, limited.Header().Get("Retry-After"), limited.Body.String())
+	}
+
+	shared := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-b/qris/dynamic", strings.NewReader(`{"template_id":"template-all","amount":25000}`))
+	req.Header.Set("X-API-Key", "key-b")
+	h.ServeHTTP(shared, req)
+	if shared.Code != http.StatusCreated {
+		t.Fatalf("shared template code=%d body=%s", shared.Code, shared.Body.String())
+	}
+}
+
+func TestAdminCanEditQRISTemplateAccessAndRateLimit(t *testing.T) {
+	repo := store.NewMemory()
+	ctx := context.Background()
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-a", Name: "Old", AccessScope: "all_tenants", MaxRequestsPM: 60, Active: true})
+	h := Server{Repo: repo, AdminTokens: map[string]string{"admin": "operator"}}.Handler()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/admin/qris-templates/template-a", strings.NewReader(`{"name":"Tenant QRIS","tenant_id":"tenant-a","access_scope":"selected_tenant","static_to_dynamic":true,"max_requests_per_minute":12,"active":true}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"max_requests_per_minute":12`) || !strings.Contains(w.Body.String(), `"tenant_id":"tenant-a"`) {
+		t.Fatalf("update code=%d body=%s", w.Code, w.Body.String())
+	}
+	stored, _ := repo.QRISTemplate(ctx, "template-a")
+	if stored.AccessScope != "selected_tenant" || !stored.StaticToDynamic || stored.MaxRequestsPM != 12 {
+		t.Fatalf("stored=%+v", stored)
 	}
 }

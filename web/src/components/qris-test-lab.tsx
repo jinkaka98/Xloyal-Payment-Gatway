@@ -38,6 +38,8 @@ export function QRISTestLab() {
 
   useEffect(() => {
     reload().catch((reason: Error) => setError(reason.message));
+    const timer = window.setInterval(() => reload().catch((reason: Error) => setError(reason.message)), 30_000);
+    return () => window.clearInterval(timer);
   }, []);
 
   async function upload(event: FormEvent) {
@@ -118,12 +120,12 @@ export function QRISTestLab() {
       <div className="qris-stage">
         <div className="stage-header"><div><span>PAYMENT TEST / LIVE QR</span><strong>{latest ? formatCurrency(latest.amount) : "Belum ada QR dinamis"}</strong></div>{latest && <StatusBadge status={latest.status} />}</div>
         {latest ? <>
-          <div className="live-qr"><Image src={`/api/qris/test-payments/${latest.id}/qr`} alt={`QRIS dinamis ${formatCurrency(latest.amount)}`} width={320} height={320} priority unoptimized /></div>
-          <div className="stage-meta"><div><span>Template</span><strong>{templates.find((item) => item.id === latest.qris_template_id)?.name ?? latest.qris_template_id}</strong></div><div><span>Kedaluwarsa</span><strong>{formatDate(latest.expires_at)}</strong></div></div>
+          <div className={`live-qr ${latest.status !== "pending" ? "closed" : ""}`}><Image src={`/api/qris/test-payments/${latest.id}/qr`} alt={`QRIS dinamis ${formatCurrency(latest.amount)}`} width={320} height={320} priority unoptimized />{latest.status !== "pending" && <span>{latest.status === "paid" ? "PAID" : "EXPIRED"}</span>}</div>
+          <div className="stage-meta"><div><span>Template</span><strong>{templates.find((item) => item.id === latest.qris_template_id)?.name ?? latest.qris_template_id}</strong></div><div><span>Kedaluwarsa</span><strong>{formatDate(latest.expires_at)}</strong></div><div><span>Merchant ID</span><strong>{latest.merchant_id || "Belum terhubung"}</strong></div><div><span>Validasi</span><strong>{latest.match_confidence.replaceAll("_", " ")}</strong></div></div>
           <button className="button button-wide" onClick={copyPayload}>{copied ? <Check size={16} /> : <Copy size={16} />}{copied ? "Payload disalin" : "Salin payload"}</button>
           <code className="dynamic-payload">{latest.dynamic_payload}</code>
         </> : <div className="qris-stage-empty"><QrCode size={52} /><strong>QR dinamis muncul di sini</strong><p>Upload QRIS statis, pilih nominal, lalu generate.</p></div>}
-        <div className="reconcile-note"><strong>Status pembayaran</strong><p>QR ini dapat dipindai untuk transaksi nyata. Status tetap pending sampai OpenAPI atau sinkronisasi portal mengonfirmasi transaksi.</p></div>
+        <div className="reconcile-note"><strong>Status pembayaran</strong><p>{latest?.status === "expired" ? "Batas pembayaran telah berakhir dan request tidak lagi diperiksa." : latest?.status === "paid" ? "Transaksi cocok ditemukan pada riwayat Merchant." : "Machine Checker memeriksa riwayat Merchant berkala sampai transaksi cocok atau batas waktu berakhir."}</p></div>
       </div>
     </section>
 
@@ -137,7 +139,7 @@ export function QRISTestLab() {
 
     <section className="section-block test-history">
       <div className="section-heading"><div><h2>Transaksi percobaan</h2><p>QR yang dibuat dari template statis.</p></div></div>
-      {payments.length === 0 ? <div className="qris-library-empty">Belum ada transaksi percobaan.</div> : <div className="table-scroll"><table><thead><tr><th>ID</th><th>Nominal</th><th>Status</th><th>Dibuat</th><th>Kedaluwarsa</th></tr></thead><tbody>{payments.map((item) => <tr key={item.id}><td><code>{item.id.slice(0, 12)}</code></td><td className="amount-cell">{formatCurrency(item.amount)}</td><td><StatusBadge status={item.status} /></td><td>{formatDate(item.created_at)}</td><td>{formatDate(item.expires_at)}</td></tr>)}</tbody></table></div>}
+      {payments.length === 0 ? <div className="qris-library-empty">Belum ada transaksi percobaan.</div> : <div className="table-scroll"><table><thead><tr><th>ID</th><th>Merchant ID</th><th>Nominal</th><th>Status</th><th>Check terakhir</th><th>Validasi</th><th>Dibuat</th><th>Kedaluwarsa</th></tr></thead><tbody>{payments.map((item) => <tr key={item.id}><td><code>{item.id.slice(0, 12)}</code></td><td><code>{item.merchant_id || "Belum terhubung"}</code></td><td className="amount-cell">{formatCurrency(item.amount)}</td><td><StatusBadge status={item.status} /><span className="cell-subtitle">{item.check_count || 0} kali check</span></td><td>{item.last_checked_at ? formatDate(item.last_checked_at) : "Belum dicek"}</td><td>{item.match_confidence.replaceAll("_", " ")}</td><td>{formatDate(item.created_at)}</td><td>{formatDate(item.expires_at)}</td></tr>)}</tbody></table></div>}
     </section>
   </div>;
 }

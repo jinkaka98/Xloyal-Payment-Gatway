@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": [],
+  "sections": [
+    {"offset": {"line": 4, "column": 0}, "map": {"version":3,"sources":["file:///C:/Users/POWER-OF-MAGIC/Documents/GitHub/Xloyal-Payment-Gatway/web/src/app/layout.tsx"],"sourcesContent":["import type { Metadata } from \"next\";\r\nimport \"./globals.css\";\r\n\r\nexport const metadata: Metadata = { title: { default: \"Xloyal Admin\", template: \"%s | Xloyal Admin\" }, description: \"QRIS payment operations console\" };\r\nexport default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) { return <html lang=\"en\"><body>{children}</body></html>; }\r\n"],"names":[],"mappings":";;;;;;;;;AAGO,MAAM,WAAqB;IAAE,OAAO;QAAE,SAAS;QAAgB,UAAU;IAAoB;IAAG,aAAa;AAAkC;AACvI,SAAS,WAAW,EAAE,QAAQ,EAA2C;IAAI,qBAAO,8OAAC;QAAK,MAAK;kBAAK,cAAA,8OAAC;sBAAM;;;;;;;;;;;AAAyB","debugId":null}},
+    {"offset": {"line": 40, "column": 0}, "map": {"version":3,"sources":["file:///C:/Users/POWER-OF-MAGIC/Documents/GitHub/Xloyal-Payment-Gatway/web/node_modules/next/src/server/route-modules/app-page/vendored/rsc/react-jsx-dev-runtime.ts"],"sourcesContent":["module.exports = (\n  require('../../module.compiled') as typeof import('../../module.compiled')\n).vendored['react-rsc']!.ReactJsxDevRuntime\n"],"names":["module","exports","require","vendored","ReactJsxDevRuntime"],"mappings":"AAAAA,OAAOC,OAAO,GACZC,QAAQ,4HACRC,QAAQ,CAAC,YAAY,CAAEC,kBAAkB","ignoreList":[0],"debugId":null}}]
+}

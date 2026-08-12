@@ -47,11 +47,63 @@ func (i *Invoice) Transition(next InvoiceStatus, now time.Time) error {
 }
 
 type Tenant struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	APIKeyHash string    `json:"-"`
-	Active     bool      `json:"active"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID          string    `json:"id"`
+	MerchantID  string    `json:"merchant_id,omitempty"`
+	Name        string    `json:"name"`
+	SiteURL     string    `json:"site_url,omitempty"`
+	CallbackURL string    `json:"callback_url,omitempty"`
+	WebhookURL  string    `json:"webhook_url,omitempty"`
+	APIKeyHash  string    `json:"-"`
+	Active      bool      `json:"active"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+type MerchantID struct {
+	ID                    string    `json:"id"`
+	InteractiveMerchantID string    `json:"interactive_merchant_id"`
+	Name                  string    `json:"name"`
+	CredentialCiphertext  string    `json:"-"`
+	Active                bool      `json:"active"`
+	CreatedAt             time.Time `json:"created_at"`
+}
+
+type ConnectionStatus string
+
+const (
+	ConnectionDisconnected      ConnectionStatus = "disconnected"
+	ConnectionConnected         ConnectionStatus = "connected"
+	ConnectionExpired           ConnectionStatus = "expired"
+	ConnectionReconnectRequired ConnectionStatus = "reconnect_required"
+)
+
+type MerchantConnection struct {
+	MerchantID        string           `json:"merchant_id"`
+	SessionCiphertext string           `json:"-"`
+	Status            ConnectionStatus `json:"status"`
+	LastSyncedAt      *time.Time       `json:"last_synced_at,omitempty"`
+	LastError         string           `json:"last_error,omitempty"`
+	UpdatedAt         time.Time        `json:"updated_at"`
+}
+
+type PortalTransaction struct {
+	ID              string    `json:"id"`
+	MerchantID      string    `json:"merchant_id"`
+	TenantID        string    `json:"tenant_id,omitempty"`
+	Reference       string    `json:"reference"`
+	Amount          int64     `json:"amount"`
+	Status          string    `json:"status"`
+	PaidAt          time.Time `json:"paid_at"`
+	Source          string    `json:"source"`
+	MatchConfidence string    `json:"match_confidence"`
+	InvoiceID       string    `json:"invoice_id,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+type Tariff struct {
+	MerchantID  string    `json:"merchant_id"`
+	BasisPoints int64     `json:"basis_points"`
+	FixedFee    int64     `json:"fixed_fee"`
+	Active      bool      `json:"active"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 type MerchantAccount struct {
 	ID                   string    `json:"id"`
@@ -74,24 +126,59 @@ type AuditEvent struct {
 }
 
 type QRISTemplate struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	StaticPayload string    `json:"-"`
-	ImageMIME     string    `json:"image_mime"`
-	ImageData     []byte    `json:"-"`
-	MerchantName  string    `json:"merchant_name"`
-	MerchantCity  string    `json:"merchant_city"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID              string    `json:"id"`
+	TenantID        string    `json:"tenant_id,omitempty"`
+	Name            string    `json:"name"`
+	StaticPayload   string    `json:"-"`
+	ImageMIME       string    `json:"image_mime"`
+	ImageData       []byte    `json:"-"`
+	MerchantName    string    `json:"merchant_name"`
+	MerchantCity    string    `json:"merchant_city"`
+	AccessScope     string    `json:"access_scope"`
+	StaticToDynamic bool      `json:"static_to_dynamic"`
+	MaxRequestsPM   int       `json:"max_requests_per_minute"`
+	Active          bool      `json:"active"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 type TestPayment struct {
-	ID             string        `json:"id"`
-	QRISTemplateID string        `json:"qris_template_id"`
-	Amount         int64         `json:"amount"`
-	DynamicPayload string        `json:"dynamic_payload"`
-	Status         InvoiceStatus `json:"status"`
-	CreatedAt      time.Time     `json:"created_at"`
-	ExpiresAt      time.Time     `json:"expires_at"`
+	ID                   string        `json:"id"`
+	QRISTemplateID       string        `json:"qris_template_id"`
+	MerchantID           string        `json:"merchant_id,omitempty"`
+	TenantID             string        `json:"tenant_id,omitempty"`
+	Amount               int64         `json:"amount"`
+	DynamicPayload       string        `json:"dynamic_payload"`
+	Status               InvoiceStatus `json:"status"`
+	RequestSource        string        `json:"request_source"`
+	MatchConfidence      string        `json:"match_confidence"`
+	MatchedTransactionID string        `json:"matched_transaction_id,omitempty"`
+	CreatedAt            time.Time     `json:"created_at"`
+	UpdatedAt            time.Time     `json:"updated_at"`
+	ExpiresAt            time.Time     `json:"expires_at"`
+	LastCheckedAt        *time.Time    `json:"last_checked_at,omitempty"`
+	NextCheckAt          *time.Time    `json:"next_check_at,omitempty"`
+	CheckCount           int           `json:"check_count"`
+}
+
+type GlobalTransactionLog struct {
+	ID                   string     `json:"id"`
+	EventType            string     `json:"event_type"`
+	MerchantID           string     `json:"merchant_id,omitempty"`
+	TenantID             string     `json:"tenant_id,omitempty"`
+	Reference            string     `json:"reference"`
+	Amount               int64      `json:"amount"`
+	Status               string     `json:"status"`
+	EventAt              time.Time  `json:"event_at"`
+	Source               string     `json:"source"`
+	RequestSource        string     `json:"request_source"`
+	Validation           string     `json:"validation"`
+	ExpiresAt            *time.Time `json:"expires_at,omitempty"`
+	LastCheckedAt        *time.Time `json:"last_checked_at,omitempty"`
+	NextCheckAt          *time.Time `json:"next_check_at,omitempty"`
+	CheckCount           int        `json:"check_count"`
+	InvoiceID            string     `json:"invoice_id,omitempty"`
+	TestPaymentID        string     `json:"test_payment_id,omitempty"`
+	MatchedTransactionID string     `json:"matched_transaction_id,omitempty"`
 }
 
 type CreatePaymentRequest struct {

@@ -1,5 +1,4 @@
-import { auditEvents, invoices, merchantAccounts, providerHealth, tenants } from "./mock-data";
-import type { ApiEnvelope, AuditEvent, DashboardSummary, Invoice, MerchantAccount, ProviderHealth, Tenant } from "./types";
+import type { ApiEnvelope, AuditEvent, DashboardSummary, GlobalTransactionLog, Invoice, MerchantAccount, MerchantConnection, MerchantID, PortalTransaction, ProviderHealth, QRISTemplate, Tariff, Tenant } from "./types";
 
 const API_URL = process.env.INTERNAL_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 const USE_MOCK = process.env.NEXT_PUBLIC_USE_MOCK_API === "true";
@@ -21,6 +20,7 @@ interface ApiInvoice {
   id: string;
   tenant_id: string;
   merchant_account_id: string;
+  idempotency_key: string;
   amount: number;
   currency: "IDR";
   description: string;
@@ -30,11 +30,17 @@ interface ApiInvoice {
   created_at: string;
   updated_at: string;
   expires_at: string;
+  last_checked_at?: string;
+  check_count: number;
 }
 
 interface ApiTenant {
   id: string;
+  merchant_id?: string;
   name: string;
+  site_url?: string;
+  callback_url?: string;
+  webhook_url?: string;
   active: boolean;
   created_at: string;
 }
@@ -61,9 +67,14 @@ interface ApiAudit {
 interface ApiHealth {
   id: string;
   name: string;
+  kind: ProviderHealth["kind"];
   status: ProviderHealth["status"];
   latency_ms: number;
+  endpoint?: string;
   last_checked_at: string;
+  last_connected_at?: string;
+  last_synced_at?: string;
+  updated_at?: string;
   message: string;
 }
 
@@ -74,7 +85,7 @@ function invoiceFromApi(item: ApiInvoice): Invoice {
     tenantName: item.tenant_id,
     merchantAccountId: item.merchant_account_id,
     merchantName: item.merchant_account_id,
-    provider: "openapi",
+    provider: "interactive_qris",
     providerReference: item.provider_reference,
     customerName: item.description || "QRIS customer",
     description: item.description,
@@ -85,6 +96,9 @@ function invoiceFromApi(item: ApiInvoice): Invoice {
     createdAt: item.created_at,
     updatedAt: item.updated_at,
     expiresAt: item.expires_at,
+    lastCheckedAt: item.last_checked_at,
+    checkCount: item.check_count ?? 0,
+    idempotencyKey: item.idempotency_key,
     timeline: [
       { id: `${item.id}-created`, label: "Invoice created", description: "Payment request accepted by Xloyal.", timestamp: item.created_at, state: "complete" },
       { id: `${item.id}-status`, label: item.status === "paid" ? "Payment confirmed" : `Status: ${item.status}`, description: "Latest status reported by the QRIS provider.", timestamp: item.updated_at, state: item.status === "failed" ? "error" : "current" },
@@ -93,15 +107,20 @@ function invoiceFromApi(item: ApiInvoice): Invoice {
 }
 
 export const api = {
+	async getMerchantIDs(): Promise<MerchantID[]> { return request<MerchantID[]>("/admin/merchant-ids", []); },
+	async getMerchantConnection(id: string): Promise<MerchantConnection | null> { if (USE_MOCK) return null; try { return await request<MerchantConnection>(`/admin/merchant-ids/${encodeURIComponent(id)}/connection`, {} as MerchantConnection); } catch { return null; } },
+	async getMerchantTransactions(merchantID = ""): Promise<PortalTransaction[]> { return request<PortalTransaction[]>(`/admin/merchant-transactions?merchant_id=${encodeURIComponent(merchantID)}`, []); },
+	async getGlobalTransactions(limit = 500): Promise<GlobalTransactionLog[]> { return request<GlobalTransactionLog[]>(`/admin/global-transactions?limit=${limit}`, []); },
+	async getTariff(id: string): Promise<Tariff> { return request<Tariff>(`/admin/merchant-ids/${encodeURIComponent(id)}/tariff`, { merchant_id: id, basis_points: 0, fixed_fee: 0, active: true }); },
+	async getQRSTemplates(): Promise<QRISTemplate[]> { return request<QRISTemplate[]>("/admin/qris-templates", []); },
   async getDashboard(): Promise<DashboardSummary> {
-    const paid = invoices.filter((invoice) => invoice.status === "paid");
     const fallback = {
-      totalVolume: paid.reduce((sum, invoice) => sum + invoice.amount, 0),
-      paidInvoices: paid.length,
-      pendingInvoices: invoices.filter((invoice) => invoice.status === "pending").length,
-      successRate: 98.7,
-      recentInvoices: invoices,
-      providerHealth,
+      totalVolume: 0,
+      paidInvoices: 0,
+      pendingInvoices: 0,
+      successRate: 0,
+      recentInvoices: [],
+      providerHealth: [],
     };
     if (USE_MOCK) return fallback;
     const raw = await request<{
@@ -123,12 +142,12 @@ export const api = {
     };
   },
   async getTenants(): Promise<Tenant[]> {
-    if (USE_MOCK) return tenants;
+    if (USE_MOCK) return [];
     const items = await request<ApiTenant[]>("/admin/tenants", []);
-    return items.map((item) => ({ id: item.id, name: item.name, slug: item.id, active: item.active, invoiceCount: 0, volume: 0, createdAt: item.created_at }));
+    return items.map((item) => ({ id: item.id, name: item.name, merchantId: item.merchant_id ?? "", siteUrl: item.site_url ?? "", callbackUrl: item.callback_url ?? "", webhookUrl: item.webhook_url ?? "", active: item.active, createdAt: item.created_at }));
   },
   async getMerchantAccounts(): Promise<MerchantAccount[]> {
-    if (USE_MOCK) return merchantAccounts;
+    if (USE_MOCK) return [];
     const [items, health] = await Promise.all([request<ApiMerchant[]>("/admin/merchant-accounts", []), api.getProviderHealth()]);
     const healthByID = new Map(health.map((item) => [item.id, item]));
     return items.map((item) => {
@@ -140,11 +159,11 @@ export const api = {
     });
   },
   async getInvoices(): Promise<Invoice[]> {
-    if (USE_MOCK) return invoices;
+    if (USE_MOCK) return [];
     return (await request<ApiInvoice[]>("/admin/invoices", [])).map(invoiceFromApi);
   },
   async getInvoice(id: string): Promise<Invoice | null> {
-    if (USE_MOCK) return invoices.find((item) => item.id === id) ?? null;
+    if (USE_MOCK) return null;
     try {
       return invoiceFromApi(await request<ApiInvoice>(`/admin/invoices/${encodeURIComponent(id)}`, {} as ApiInvoice));
     } catch {
@@ -152,7 +171,7 @@ export const api = {
     }
   },
   async getAuditEvents(): Promise<AuditEvent[]> {
-    if (USE_MOCK) return auditEvents;
+    if (USE_MOCK) return [];
     const items = await request<ApiAudit[]>("/admin/audit-events", []);
     return items.map((item) => ({
       id: item.id, actor: item.actor, action: item.action, resourceType: item.resource_type, resourceId: item.resource_id,
@@ -160,11 +179,12 @@ export const api = {
     }));
   },
   async getProviderHealth(): Promise<ProviderHealth[]> {
-    if (USE_MOCK) return providerHealth;
+    if (USE_MOCK) return [];
     const items = await request<ApiHealth[]>("/admin/health", []);
     return items.map((item) => ({
-      id: item.id, name: item.name, status: item.status, latencyMs: item.latency_ms, uptime: item.status === "operational" ? 100 : 0,
-      lastCheckedAt: item.last_checked_at, message: item.message,
+      id: item.id, name: item.name, kind: item.kind, status: item.status, latencyMs: item.latency_ms,
+      endpoint: item.endpoint, lastCheckedAt: item.last_checked_at, lastConnectedAt: item.last_connected_at,
+      lastSyncedAt: item.last_synced_at, updatedAt: item.updated_at, message: item.message,
     }));
   },
 };

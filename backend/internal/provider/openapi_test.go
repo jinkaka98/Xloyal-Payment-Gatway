@@ -40,18 +40,6 @@ func TestOpenAPIContracts(t *testing.T) {
 		t.Fatal(checked, err, createOK, checkOK)
 	}
 }
-func TestPortalDisabledAndFixtureState(t *testing.T) {
-	p := PortalSessionAdapter{}
-	if _, err := p.ParseFixture([]byte(`{"state":"paid"}`)); err != ErrPortalDisabled {
-		t.Fatal(err)
-	}
-	p.Enabled = true
-	s, err := p.ParseFixture([]byte(`{"state":"completed"}`))
-	if err != nil || s != domain.InvoicePaid {
-		t.Fatal(s, err)
-	}
-}
-
 func TestOpenAPIMapsUnpaidToPending(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"status": "success", "data": map[string]string{"qris_status": "unpaid"}})

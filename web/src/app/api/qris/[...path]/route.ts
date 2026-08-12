@@ -21,6 +21,9 @@ function adminPath(method: string, path: string[]) {
   if (path.length === 3 && resource === "templates" && typeof id === "string" && idPattern.test(id) && action === "image" && method === "GET") {
     return `/admin/qris-templates/${id}/image`;
   }
+  if (path.length === 2 && resource === "templates" && typeof id === "string" && idPattern.test(id) && method === "PUT") {
+    return `/admin/qris-templates/${id}`;
+  }
   if (path.length === 1 && resource === "test-payments" && (method === "GET" || method === "POST")) {
     return "/admin/qris-test-payments";
   }
@@ -44,7 +47,7 @@ function trustedOrigin(origin: string, requestURL: string) {
 async function proxy(request: Request, context: { params: Promise<{ path: string[] }> }) {
   if (!await authorize()) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const origin = request.headers.get("Origin");
-  if (request.method === "POST" && origin && !trustedOrigin(origin, request.url)) {
+  if (["POST", "PUT"].includes(request.method) && origin && !trustedOrigin(origin, request.url)) {
     return NextResponse.json({ error: "invalid origin" }, { status: 403 });
   }
   const path = adminPath(request.method, (await context.params).path);
@@ -62,6 +65,10 @@ async function proxy(request: Request, context: { params: Promise<{ path: string
       body = await request.text();
     }
   }
+  if (request.method === "PUT") {
+    headers.set("Content-Type", "application/json");
+    body = await request.text();
+  }
   const response = await fetch(`${API_URL}${path}`, { method: request.method, headers, body: body ?? null, cache: "no-store" });
   return new NextResponse(response.body, {
     status: response.status,
@@ -71,3 +78,4 @@ async function proxy(request: Request, context: { params: Promise<{ path: string
 
 export const GET = proxy;
 export const POST = proxy;
+export const PUT = proxy;

@@ -23,6 +23,8 @@ type OpenAPIConfig struct {
 	APIKey     string       `json:"api_key"`
 	Client     *http.Client `json:"-"`
 }
+
+const InteractiveQRISProvider = "interactive_qris"
 type OpenAPI struct{ cfg OpenAPIConfig }
 
 func NewOpenAPI(cfg OpenAPIConfig) (*OpenAPI, error) {
@@ -162,39 +164,4 @@ func (p *OpenAPI) endpoint(path string, q url.Values) (string, error) {
 
 func validQRISPayload(payload string) bool {
 	return len(payload) >= 12 && len(payload) <= 4096 && strings.HasPrefix(payload, "000201")
-}
-
-var ErrPortalDisabled = errors.New("portal session adapter disabled")
-
-type PortalSessionAdapter struct{ Enabled bool }
-
-func (p PortalSessionAdapter) CreatePayment(context.Context, domain.CreatePaymentRequest) (domain.CreatePaymentResult, error) {
-	return domain.CreatePaymentResult{}, ErrPortalDisabled
-}
-func (p PortalSessionAdapter) CheckPayment(context.Context, domain.CheckPaymentRequest) (domain.CheckPaymentResult, error) {
-	return domain.CheckPaymentResult{}, ErrPortalDisabled
-}
-func (p PortalSessionAdapter) Health(context.Context) error { return ErrPortalDisabled }
-func (p PortalSessionAdapter) ParseFixture(data []byte) (domain.InvoiceStatus, error) {
-	if !p.Enabled {
-		return "", ErrPortalDisabled
-	}
-	var v struct {
-		State string `json:"state"`
-	}
-	if err := json.Unmarshal(data, &v); err != nil {
-		return "", err
-	}
-	switch strings.ToLower(v.State) {
-	case "waiting", "pending":
-		return domain.InvoicePending, nil
-	case "completed", "paid":
-		return domain.InvoicePaid, nil
-	case "expired":
-		return domain.InvoiceExpired, nil
-	case "failed":
-		return domain.InvoiceFailed, nil
-	default:
-		return "", fmt.Errorf("unknown portal state %q", v.State)
-	}
 }

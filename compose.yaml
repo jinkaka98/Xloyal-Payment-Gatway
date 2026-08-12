@@ -10,6 +10,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./deploy-tidakdepploykedoscker/postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./deploy-tidakdepploykedoscker/postgres/migrations:/migrations:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -43,15 +44,38 @@ services:
       context: .
       dockerfile: deploy-tidakdepploykedoscker/backend/Dockerfile
       target: worker
-    environment: *backend-env
+    environment:
+      <<: *backend-env
+      CAMOUFOX_CHECKER_CMD: ${CAMOUFOX_CHECKER_CMD:-node /app/camofox_browser_checker.mjs}
+      CAMOFOX_BROWSER_URL: http://camofox-browser:9377
+      CAMOFOX_BROWSER_API_KEY: ${CAMOFOX_BROWSER_API_KEY}
+      CAMOUFOX_CREDENTIAL_FILE: ${CAMOUFOX_CREDENTIAL_FILE:-}
     depends_on:
       postgres:
+        condition: service_healthy
+      camofox-browser:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "pidof worker >/dev/null"]
       interval: 30s
       timeout: 3s
       retries: 3
+    restart: unless-stopped
+
+  camofox-browser:
+    build:
+      context: ./backend/tools/camofox-browser
+      dockerfile: Dockerfile
+    environment:
+      CAMOFOX_HOST: 0.0.0.0
+      CAMOFOX_PORT: "9377"
+      CAMOFOX_AUTH_MODE: required
+      CAMOFOX_API_KEY: ${CAMOFOX_BROWSER_API_KEY}
+      CAMOFOX_PROFILES_DIR: /home/node/.camofox/profiles
+    expose:
+      - "9377"
+    volumes:
+      - merchant_browser_profiles:/home/node/.camofox
     restart: unless-stopped
 
   web:
@@ -84,4 +108,5 @@ services:
 
 volumes:
   postgres_data:
+  merchant_browser_profiles:
 

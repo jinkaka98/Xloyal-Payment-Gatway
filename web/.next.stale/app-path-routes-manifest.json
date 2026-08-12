@@ -1,0 +1,6 @@
+{
+  "/(admin)/dashboard/page": "/dashboard",
+  "/(admin)/global-transactions/page": "/global-transactions",
+  "/(admin)/merchant-connecting/page": "/merchant-connecting",
+  "/(admin)/qris-test/page": "/qris-test"
+}

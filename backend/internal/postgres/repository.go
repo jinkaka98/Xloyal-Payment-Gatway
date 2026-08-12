@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"xloyal/backend/internal/domain"
@@ -20,15 +21,31 @@ func New(db *sql.DB) *Repository                       { return &Repository{DB: 
 func (r *Repository) Health(ctx context.Context) error { return r.DB.PingContext(ctx) }
 func (r *Repository) TenantByAPIKey(ctx context.Context, h string) (domain.Tenant, error) {
 	var v domain.Tenant
-	err := r.DB.QueryRowContext(ctx, `SELECT id,name,api_key_hash,active,created_at FROM tenants WHERE api_key_hash=$1 AND active=true`, h).Scan(&v.ID, &v.Name, &v.APIKeyHash, &v.Active, &v.CreatedAt)
+	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),api_key_hash,active,created_at FROM tenants WHERE api_key_hash=$1 AND active=true`, h).Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.APIKeyHash, &v.Active, &v.CreatedAt)
+	return v, notFound(err)
+}
+func (r *Repository) Tenant(ctx context.Context, id string) (domain.Tenant, error) {
+	var v domain.Tenant
+	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),api_key_hash,active,created_at FROM tenants WHERE id=$1`, id).Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.APIKeyHash, &v.Active, &v.CreatedAt)
 	return v, notFound(err)
 }
 func (r *Repository) CreateTenant(ctx context.Context, v domain.Tenant) error {
-	_, err := r.DB.ExecContext(ctx, `INSERT INTO tenants(id,name,api_key_hash,active,created_at) VALUES($1,$2,$3,$4,$5)`, v.ID, v.Name, v.APIKeyHash, v.Active, v.CreatedAt)
+	_, err := r.DB.ExecContext(ctx, `INSERT INTO tenants(id,merchant_id,name,site_url,callback_url,webhook_url,api_key_hash,active,created_at) VALUES($1,NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,$8,$9)`, v.ID, v.MerchantID, v.Name, v.SiteURL, v.CallbackURL, v.WebhookURL, v.APIKeyHash, v.Active, v.CreatedAt)
 	return err
 }
+func (r *Repository) UpdateTenant(ctx context.Context, v domain.Tenant) error {
+	res, err := r.DB.ExecContext(ctx, `UPDATE tenants SET merchant_id=NULLIF($1,''),name=$2,site_url=NULLIF($3,''),callback_url=NULLIF($4,''),webhook_url=NULLIF($5,''),active=$6 WHERE id=$7`, v.MerchantID, v.Name, v.SiteURL, v.CallbackURL, v.WebhookURL, v.Active, v.ID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
 func (r *Repository) ListTenants(ctx context.Context) ([]domain.Tenant, error) {
-	rows, err := r.DB.QueryContext(ctx, `SELECT id,name,api_key_hash,active,created_at FROM tenants ORDER BY created_at DESC`)
+	rows, err := r.DB.QueryContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),api_key_hash,active,created_at FROM tenants ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -36,12 +53,118 @@ func (r *Repository) ListTenants(ctx context.Context) ([]domain.Tenant, error) {
 	out := make([]domain.Tenant, 0)
 	for rows.Next() {
 		var v domain.Tenant
-		if err := rows.Scan(&v.ID, &v.Name, &v.APIKeyHash, &v.Active, &v.CreatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.APIKeyHash, &v.Active, &v.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+func (r *Repository) AssignTenantMerchant(ctx context.Context, tenantID, merchantID string) error {
+	res, err := r.DB.ExecContext(ctx, `UPDATE tenants SET merchant_id=$1 WHERE id=$2`, merchantID, tenantID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+func (r *Repository) CreateMerchantID(ctx context.Context, v domain.MerchantID) error {
+	_, err := r.DB.ExecContext(ctx, `INSERT INTO merchant_ids(id,interactive_merchant_id,name,credential_ciphertext,active,created_at) VALUES($1,$2,$3,$4,$5,$6)`, v.ID, v.InteractiveMerchantID, v.Name, v.CredentialCiphertext, v.Active, v.CreatedAt)
+	return err
+}
+func (r *Repository) MerchantID(ctx context.Context, id string) (domain.MerchantID, error) {
+	var v domain.MerchantID
+	err := r.DB.QueryRowContext(ctx, `SELECT id,interactive_merchant_id,name,credential_ciphertext,active,created_at FROM merchant_ids WHERE id=$1`, id).Scan(&v.ID, &v.InteractiveMerchantID, &v.Name, &v.CredentialCiphertext, &v.Active, &v.CreatedAt)
+	return v, notFound(err)
+}
+func (r *Repository) ListMerchantIDs(ctx context.Context) ([]domain.MerchantID, error) {
+	rows, err := r.DB.QueryContext(ctx, `SELECT id,interactive_merchant_id,name,credential_ciphertext,active,created_at FROM merchant_ids ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.MerchantID{}
+	for rows.Next() {
+		var v domain.MerchantID
+		if err := rows.Scan(&v.ID, &v.InteractiveMerchantID, &v.Name, &v.CredentialCiphertext, &v.Active, &v.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+func (r *Repository) UpsertMerchantConnection(ctx context.Context, v domain.MerchantConnection) error {
+	_, err := r.DB.ExecContext(ctx, `INSERT INTO merchant_connections(merchant_id,session_ciphertext,status,last_synced_at,last_error,updated_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(merchant_id) DO UPDATE SET session_ciphertext=EXCLUDED.session_ciphertext,status=EXCLUDED.status,last_synced_at=EXCLUDED.last_synced_at,last_error=EXCLUDED.last_error,updated_at=EXCLUDED.updated_at`, v.MerchantID, v.SessionCiphertext, v.Status, v.LastSyncedAt, v.LastError, v.UpdatedAt)
+	return err
+}
+func (r *Repository) MerchantConnection(ctx context.Context, id string) (domain.MerchantConnection, error) {
+	var v domain.MerchantConnection
+	err := r.DB.QueryRowContext(ctx, `SELECT merchant_id,session_ciphertext,status,last_synced_at,last_error,updated_at FROM merchant_connections WHERE merchant_id=$1`, id).Scan(&v.MerchantID, &v.SessionCiphertext, &v.Status, &v.LastSyncedAt, &v.LastError, &v.UpdatedAt)
+	return v, notFound(err)
+}
+func (r *Repository) ListDueMerchantConnections(ctx context.Context, due time.Time, limit int) ([]domain.MerchantConnection, error) {
+	rows, err := r.DB.QueryContext(ctx, `SELECT merchant_id,session_ciphertext,status,last_synced_at,last_error,updated_at FROM merchant_connections WHERE status IN ('connected','reconnect_required') AND GREATEST(COALESCE(last_synced_at,updated_at),updated_at) <= $1 ORDER BY updated_at LIMIT $2`, due, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.MerchantConnection{}
+	for rows.Next() {
+		var v domain.MerchantConnection
+		if err := rows.Scan(&v.MerchantID, &v.SessionCiphertext, &v.Status, &v.LastSyncedAt, &v.LastError, &v.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+func (r *Repository) CreatePortalTransaction(ctx context.Context, v domain.PortalTransaction) error {
+	_, err := r.DB.ExecContext(ctx, `INSERT INTO portal_transactions(id,merchant_id,tenant_id,reference,amount,status,paid_at,source,match_confidence,invoice_id,created_at) VALUES($1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,$9,NULLIF($10,''),$11) ON CONFLICT(merchant_id,reference) DO UPDATE SET amount=EXCLUDED.amount,status=EXCLUDED.status,paid_at=EXCLUDED.paid_at,source=EXCLUDED.source,tenant_id=COALESCE(portal_transactions.tenant_id,EXCLUDED.tenant_id),invoice_id=COALESCE(portal_transactions.invoice_id,EXCLUDED.invoice_id),match_confidence=CASE WHEN portal_transactions.tenant_id IS NULL THEN EXCLUDED.match_confidence ELSE portal_transactions.match_confidence END`, v.ID, v.MerchantID, v.TenantID, v.Reference, v.Amount, v.Status, v.PaidAt, v.Source, v.MatchConfidence, v.InvoiceID, v.CreatedAt)
+	return err
+}
+func (r *Repository) ListPortalTransactions(ctx context.Context, merchantID, tenantID string, limit int) ([]domain.PortalTransaction, error) {
+	q := `SELECT id,merchant_id,COALESCE(tenant_id,''),reference,amount,status,paid_at,source,match_confidence,COALESCE(invoice_id,''),created_at FROM portal_transactions`
+	args := []any{}
+	where := []string{}
+	if merchantID != "" {
+		args = append(args, merchantID)
+		where = append(where, `merchant_id=$`+fmt.Sprint(len(args)))
+	}
+	if tenantID != "" {
+		args = append(args, tenantID)
+		where = append(where, `tenant_id=$`+fmt.Sprint(len(args)))
+	}
+	if len(where) > 0 {
+		q += ` WHERE ` + strings.Join(where, ` AND `)
+	}
+	args = append(args, limit)
+	q += ` ORDER BY paid_at DESC LIMIT $` + fmt.Sprint(len(args))
+	rows, err := r.DB.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.PortalTransaction{}
+	for rows.Next() {
+		var v domain.PortalTransaction
+		if err := rows.Scan(&v.ID, &v.MerchantID, &v.TenantID, &v.Reference, &v.Amount, &v.Status, &v.PaidAt, &v.Source, &v.MatchConfidence, &v.InvoiceID, &v.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+func (r *Repository) UpsertTariff(ctx context.Context, v domain.Tariff) error {
+	_, err := r.DB.ExecContext(ctx, `INSERT INTO merchant_tariffs(merchant_id,basis_points,fixed_fee,active,updated_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT(merchant_id) DO UPDATE SET basis_points=EXCLUDED.basis_points,fixed_fee=EXCLUDED.fixed_fee,active=EXCLUDED.active,updated_at=EXCLUDED.updated_at`, v.MerchantID, v.BasisPoints, v.FixedFee, v.Active, v.UpdatedAt)
+	return err
+}
+func (r *Repository) Tariff(ctx context.Context, merchantID string) (domain.Tariff, error) {
+	var v domain.Tariff
+	err := r.DB.QueryRowContext(ctx, `SELECT merchant_id,basis_points,fixed_fee,active,updated_at FROM merchant_tariffs WHERE merchant_id=$1`, merchantID).Scan(&v.MerchantID, &v.BasisPoints, &v.FixedFee, &v.Active, &v.UpdatedAt)
+	return v, notFound(err)
 }
 func (r *Repository) CreateMerchantAccount(ctx context.Context, v domain.MerchantAccount) error {
 	_, err := r.DB.ExecContext(ctx, `INSERT INTO merchant_accounts(id,tenant_id,provider,name,credential_ciphertext,active,created_at) VALUES($1,$2,$3,$4,$5,$6,$7)`, v.ID, v.TenantID, v.Provider, v.Name, v.CredentialCiphertext, v.Active, v.CreatedAt)
@@ -135,17 +258,28 @@ func (r *Repository) ListInvoices(ctx context.Context, tenant string, limit int)
 	return scanInvoices(rows, err)
 }
 func (r *Repository) CreateQRISTemplate(ctx context.Context, v domain.QRISTemplate) error {
-	_, err := r.DB.ExecContext(ctx, `INSERT INTO qris_templates(id,name,static_payload,image_mime,image_data,merchant_name,merchant_city,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, v.ID, v.Name, v.StaticPayload, v.ImageMIME, v.ImageData, v.MerchantName, v.MerchantCity, v.CreatedAt)
+	_, err := r.DB.ExecContext(ctx, `INSERT INTO qris_templates(id,tenant_id,name,static_payload,image_mime,image_data,merchant_name,merchant_city,access_scope,static_to_dynamic,max_requests_per_minute,active,created_at) VALUES($1,NULLIF($2,''),$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, v.ID, v.TenantID, v.Name, v.StaticPayload, v.ImageMIME, v.ImageData, v.MerchantName, v.MerchantCity, v.AccessScope, v.StaticToDynamic, v.MaxRequestsPM, v.Active, v.CreatedAt)
 	return err
+}
+func (r *Repository) UpdateQRISTemplate(ctx context.Context, v domain.QRISTemplate) error {
+	res, err := r.DB.ExecContext(ctx, `UPDATE qris_templates SET tenant_id=NULLIF($1,''),name=$2,access_scope=$3,static_to_dynamic=$4,max_requests_per_minute=$5,active=$6 WHERE id=$7`, v.TenantID, v.Name, v.AccessScope, v.StaticToDynamic, v.MaxRequestsPM, v.Active, v.ID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
 }
 func (r *Repository) QRISTemplate(ctx context.Context, id string) (domain.QRISTemplate, error) {
 	var v domain.QRISTemplate
-	err := r.DB.QueryRowContext(ctx, `SELECT id,name,static_payload,image_mime,image_data,merchant_name,merchant_city,created_at FROM qris_templates WHERE id=$1`, id).
-		Scan(&v.ID, &v.Name, &v.StaticPayload, &v.ImageMIME, &v.ImageData, &v.MerchantName, &v.MerchantCity, &v.CreatedAt)
+	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(tenant_id,''),name,static_payload,image_mime,image_data,merchant_name,merchant_city,access_scope,static_to_dynamic,max_requests_per_minute,active,created_at FROM qris_templates WHERE id=$1`, id).
+		Scan(&v.ID, &v.TenantID, &v.Name, &v.StaticPayload, &v.ImageMIME, &v.ImageData, &v.MerchantName, &v.MerchantCity, &v.AccessScope, &v.StaticToDynamic, &v.MaxRequestsPM, &v.Active, &v.CreatedAt)
 	return v, notFound(err)
 }
 func (r *Repository) ListQRISTemplates(ctx context.Context) ([]domain.QRISTemplate, error) {
-	rows, err := r.DB.QueryContext(ctx, `SELECT id,name,static_payload,image_mime,image_data,merchant_name,merchant_city,created_at FROM qris_templates ORDER BY created_at DESC`)
+	rows, err := r.DB.QueryContext(ctx, `SELECT id,COALESCE(tenant_id,''),name,static_payload,image_mime,image_data,merchant_name,merchant_city,access_scope,static_to_dynamic,max_requests_per_minute,active,created_at FROM qris_templates ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -153,28 +287,81 @@ func (r *Repository) ListQRISTemplates(ctx context.Context) ([]domain.QRISTempla
 	out := make([]domain.QRISTemplate, 0)
 	for rows.Next() {
 		var v domain.QRISTemplate
-		if err := rows.Scan(&v.ID, &v.Name, &v.StaticPayload, &v.ImageMIME, &v.ImageData, &v.MerchantName, &v.MerchantCity, &v.CreatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.TenantID, &v.Name, &v.StaticPayload, &v.ImageMIME, &v.ImageData, &v.MerchantName, &v.MerchantCity, &v.AccessScope, &v.StaticToDynamic, &v.MaxRequestsPM, &v.Active, &v.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
 	}
 	return out, rows.Err()
 }
+func (r *Repository) AllowQRISRequest(ctx context.Context, templateID, tenantID string, now time.Time, max int) (bool, int, error) {
+	windowStart := now.UTC().Truncate(time.Minute)
+	var count int
+	err := r.DB.QueryRowContext(ctx, `INSERT INTO qris_template_rate_limits(template_id,tenant_id,window_started_at,request_count) VALUES($1,$2,$3,1) ON CONFLICT(template_id,tenant_id) DO UPDATE SET window_started_at=CASE WHEN qris_template_rate_limits.window_started_at < EXCLUDED.window_started_at THEN EXCLUDED.window_started_at ELSE qris_template_rate_limits.window_started_at END,request_count=CASE WHEN qris_template_rate_limits.window_started_at < EXCLUDED.window_started_at THEN 1 ELSE qris_template_rate_limits.request_count+1 END RETURNING request_count`, templateID, tenantID, windowStart).Scan(&count)
+	retry := int(windowStart.Add(time.Minute).Sub(now.UTC()).Seconds())
+	if retry < 1 {
+		retry = 1
+	}
+	return count <= max, retry, err
+}
 func (r *Repository) CreateTestPayment(ctx context.Context, v domain.TestPayment) error {
-	_, err := r.DB.ExecContext(ctx, `INSERT INTO test_payments(id,qris_template_id,amount,dynamic_payload,status,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)`, v.ID, v.QRISTemplateID, v.Amount, v.DynamicPayload, v.Status, v.CreatedAt, v.ExpiresAt)
+	_, err := r.DB.ExecContext(ctx, `INSERT INTO test_payments(id,qris_template_id,merchant_id,tenant_id,amount,dynamic_payload,status,request_source,match_confidence,matched_transaction_id,created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count) VALUES($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6,$7,$8,$9,NULLIF($10,''),$11,$12,$13,$14,$15,$16)`, v.ID, v.QRISTemplateID, v.MerchantID, v.TenantID, v.Amount, v.DynamicPayload, v.Status, v.RequestSource, v.MatchConfidence, v.MatchedTransactionID, v.CreatedAt, v.UpdatedAt, v.ExpiresAt, v.LastCheckedAt, v.NextCheckAt, v.CheckCount)
 	return err
 }
-func (r *Repository) ListTestPayments(ctx context.Context, limit int) ([]domain.TestPayment, error) {
-	rows, err := r.DB.QueryContext(ctx, `SELECT id,qris_template_id,amount,dynamic_payload,status,created_at,expires_at FROM test_payments ORDER BY created_at DESC LIMIT $1`, limit)
+
+const testPaymentColumns = `SELECT id,qris_template_id,COALESCE(merchant_id,''),COALESCE(tenant_id,''),amount,dynamic_payload,status,request_source,match_confidence,COALESCE(matched_transaction_id,''),created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count FROM test_payments`
+
+func scanTestPayment(s interface{ Scan(...any) error }) (domain.TestPayment, error) {
+	var v domain.TestPayment
+	err := s.Scan(&v.ID, &v.QRISTemplateID, &v.MerchantID, &v.TenantID, &v.Amount, &v.DynamicPayload, &v.Status, &v.RequestSource, &v.MatchConfidence, &v.MatchedTransactionID, &v.CreatedAt, &v.UpdatedAt, &v.ExpiresAt, &v.LastCheckedAt, &v.NextCheckAt, &v.CheckCount)
+	return v, err
+}
+func (r *Repository) TestPayment(ctx context.Context, id string) (domain.TestPayment, error) {
+	v, err := scanTestPayment(r.DB.QueryRowContext(ctx, testPaymentColumns+` WHERE id=$1`, id))
+	return v, notFound(err)
+}
+func (r *Repository) UpdatePendingTestPayment(ctx context.Context, v domain.TestPayment) (bool, error) {
+	res, err := r.DB.ExecContext(ctx, `UPDATE test_payments SET status=$1,match_confidence=$2,matched_transaction_id=NULLIF($3,''),updated_at=$4,last_checked_at=$5,next_check_at=$6,check_count=$7 WHERE id=$8 AND status='pending'`, v.Status, v.MatchConfidence, v.MatchedTransactionID, v.UpdatedAt, v.LastCheckedAt, v.NextCheckAt, v.CheckCount, v.ID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+func (r *Repository) PendingTestPayments(ctx context.Context, due time.Time, limit int) ([]domain.TestPayment, error) {
+	rows, err := r.DB.QueryContext(ctx, testPaymentColumns+` WHERE status='pending' AND next_check_at IS NOT NULL AND next_check_at <= $1 ORDER BY next_check_at,created_at LIMIT $2`, due, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := make([]domain.TestPayment, 0)
 	for rows.Next() {
-		var v domain.TestPayment
-		if err := rows.Scan(&v.ID, &v.QRISTemplateID, &v.Amount, &v.DynamicPayload, &v.Status, &v.CreatedAt, &v.ExpiresAt); err != nil {
-			return nil, err
+		v, scanErr := scanTestPayment(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+func (r *Repository) ExpirePendingTestPayments(ctx context.Context, now time.Time) (int64, error) {
+	res, err := r.DB.ExecContext(ctx, `UPDATE test_payments SET status='expired',match_confidence='expired_no_match',updated_at=$1,last_checked_at=$1,check_count=check_count+1 WHERE status='pending' AND expires_at <= $1`, now)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+func (r *Repository) ListTestPayments(ctx context.Context, limit int) ([]domain.TestPayment, error) {
+	rows, err := r.DB.QueryContext(ctx, testPaymentColumns+` ORDER BY created_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.TestPayment, 0)
+	for rows.Next() {
+		v, scanErr := scanTestPayment(rows)
+		if scanErr != nil {
+			return nil, scanErr
 		}
 		out = append(out, v)
 	}

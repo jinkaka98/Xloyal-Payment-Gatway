@@ -23,7 +23,7 @@ export function InvoiceTable({ invoices, compact = false }: { invoices: Invoice[
       <label className="search-field"><Search size={17} aria-hidden="true" /><span className="sr-only">Search invoices</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search invoice, customer, or tenant" /></label>
       <div className="segmented-control" aria-label="Filter invoice status">{filters.map((item) => <button key={item.value} className={status === item.value ? "selected" : ""} onClick={() => setStatus(item.value)}>{item.label}</button>)}</div>
     </div>}
-    {visible.length === 0 ? <EmptyState title="No invoices found" description="Adjust the current search or status filter." /> : <div className="table-scroll"><table>
+    {visible.length === 0 ? <EmptyState title="No invoices recorded" description="Invoices will appear after a tenant creates a QRIS payment request." /> : <div className="table-scroll"><table>
       <thead><tr><th>Invoice</th><th>Customer</th><th>Tenant</th><th>Created</th><th className="align-right">Amount</th><th>Status</th></tr></thead>
       <tbody>{visible.map((invoice) => <tr key={invoice.id}>
         <td><Link className="table-link" href={`/invoices/${invoice.id}`}>{invoice.id}</Link><span className="cell-subtitle">{invoice.provider}</span></td>

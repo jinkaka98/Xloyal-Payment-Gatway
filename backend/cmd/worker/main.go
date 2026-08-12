@@ -22,7 +22,7 @@ func main() {
 	defer app.DB.Close()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	err = (worker.Worker{Repo: app.Repo, Gateway: app.Gateway}).Run(ctx)
+	err = (worker.Worker{Repo: app.Repo, Gateway: app.Gateway, SyncMerchant: app.MerchantSync}).Run(ctx)
 	if err != nil && err != context.Canceled {
 		log.Error("worker stopped", "error", err)
 		os.Exit(1)
