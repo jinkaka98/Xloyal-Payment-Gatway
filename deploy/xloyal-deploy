@@ -2,31 +2,78 @@
 set -eu
 exec 9>/run/lock/xloyal-deploy.lock
 flock -n 9 || exit 0
-. /DATA/AppData/xloyal/github.env
-if [ -z "${GITHUB_TOKEN:-}" ]; then
-  echo "GITHUB_TOKEN is not configured; leaving webhook signal queued" >&2
-  exit 0
-fi
-export GITHUB_TOKEN GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/usr/local/lib/xloyal-git-askpass
-repo=/DATA/projects/xloyal/current
+
+repository=https://github.com/jinkaka98/Xloyal-Payment-Gatway.git
+mirror=/DATA/projects/xloyal/repository.git
+releases=/DATA/projects/xloyal/releases
+current=/DATA/projects/xloyal/current
 compose=/var/lib/casaos/apps/xloyal/docker-compose.yml
 signal=/DATA/AppData/xloyal/signals/deploy-request
-cd "$repo"
-previous=$(git rev-parse HEAD)
-git fetch --quiet origin main
 requested=$(cat "$signal" 2>/dev/null || true)
-target=$(git rev-parse origin/main)
-if [ -n "$requested" ] && [ "$requested" != "$target" ]; then
-  echo "webhook commit is not origin/main; deploying current main" >&2
+case "$requested" in
+  ''|*[!0-9a-f]*) echo "invalid or missing deployment commit" >&2; exit 1 ;;
+esac
+if [ "${#requested}" -ne 40 ]; then
+  echo "deployment commit must be a full SHA-1" >&2
+  exit 1
 fi
-git checkout --detach --quiet "$target"
-if docker compose -f "$compose" up -d --build --remove-orphans && \
-  curl -fsS --max-time 15 http://127.0.0.1:1970/v1/health >/dev/null && \
-  curl -fsS --max-time 15 http://127.0.0.1:5656/ >/dev/null; then
-  printf '%s\n' "$target" > /DATA/AppData/xloyal/deployed-commit
+
+mkdir -p "$releases"
+if [ ! -d "$mirror" ]; then
+  git clone --mirror "$repository" "$mirror"
+fi
+git -C "$mirror" remote set-url origin "$repository"
+GIT_TERMINAL_PROMPT=0 git -C "$mirror" fetch --quiet --prune origin '+refs/heads/main:refs/heads/main'
+target=$(git -C "$mirror" rev-parse refs/heads/main^{commit})
+if [ "$requested" != "$target" ]; then
+  echo "webhook commit is not the current main commit" >&2
+  exit 1
+fi
+
+release="$releases/$target"
+if [ ! -d "$release" ]; then
+  staging="$releases/.staging-$target-$$"
+  mkdir "$staging"
+  git -C "$mirror" archive "$target" | tar -x -C "$staging"
+  mv "$staging" "$release"
+fi
+
+if [ ! -L "$current" ]; then
+  echo "$current must be a release symlink" >&2
+  exit 1
+fi
+previous=$(readlink -f "$current")
+rm -f "$current.next"
+ln -s "$release" "$current.next"
+mv -Tf "$current.next" "$current"
+install -m 0644 "$release/deploy/compose.casaos.yaml" "$compose"
+
+healthy() {
+  api_url=${XLOYAL_HEALTH_API_URL:-http://127.0.0.1:1970/v1/health}
+  web_url=${XLOYAL_HEALTH_WEB_URL:-http://127.0.0.1:5656/}
+  attempts=${XLOYAL_HEALTH_ATTEMPTS:-36}
+  attempt=0
+  while [ "$attempt" -lt "$attempts" ]; do
+    if curl -fsS --max-time 5 "$api_url" >/dev/null 2>&1 && \
+       curl -fsS --max-time 5 "$web_url" >/dev/null 2>&1; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 5
+  done
+  return 1
+}
+
+if docker compose -f "$compose" up -d --build --remove-orphans && healthy; then
+  install -m 0600 /dev/null /DATA/AppData/xloyal/releases/deployed-commit
+  printf '%s\n' "$target" > /DATA/AppData/xloyal/releases/deployed-commit
   rm -f "$signal"
   exit 0
 fi
-git checkout --detach --quiet "$previous"
+
+rm -f "$current.next"
+ln -s "$previous" "$current.next"
+mv -Tf "$current.next" "$current"
+install -m 0644 "$previous/deploy/compose.casaos.yaml" "$compose"
 docker compose -f "$compose" up -d --build --remove-orphans
 exit 1

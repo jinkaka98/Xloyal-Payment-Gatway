@@ -3,10 +3,14 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +21,36 @@ import (
 	"xloyal/backend/internal/security"
 	"xloyal/backend/internal/store"
 )
+
+func TestGitHubWebhookRequiresValidSignatureAndSignalsMainCommit(t *testing.T) {
+	signal := t.TempDir() + "/deploy-request"
+	h := Server{WebhookSecret: "webhook-secret", WebhookSignalPath: signal}.Handler()
+	body := []byte(`{"ref":"refs/heads/main","after":"706a74b6f0c21d5a575de8e9a2884f6b60738188"}`)
+
+	invalid := httptest.NewRecorder()
+	invalidRequest := httptest.NewRequest(http.MethodPost, "/internal/github/webhook", bytes.NewReader(body))
+	invalidRequest.Header.Set("X-GitHub-Event", "push")
+	invalidRequest.Header.Set("X-Hub-Signature-256", "sha256="+strings.Repeat("0", 64))
+	h.ServeHTTP(invalid, invalidRequest)
+	if invalid.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid signature code=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+
+	mac := hmac.New(sha256.New, []byte("webhook-secret"))
+	_, _ = mac.Write(body)
+	valid := httptest.NewRecorder()
+	validRequest := httptest.NewRequest(http.MethodPost, "/internal/github/webhook", bytes.NewReader(body))
+	validRequest.Header.Set("X-GitHub-Event", "push")
+	validRequest.Header.Set("X-Hub-Signature-256", fmt.Sprintf("sha256=%x", mac.Sum(nil)))
+	h.ServeHTTP(valid, validRequest)
+	if valid.Code != http.StatusOK {
+		t.Fatalf("valid signature code=%d body=%s", valid.Code, valid.Body.String())
+	}
+	written, err := os.ReadFile(signal)
+	if err != nil || string(written) != "706a74b6f0c21d5a575de8e9a2884f6b60738188\n" {
+		t.Fatalf("signal=%q err=%v", written, err)
+	}
+}
 
 type provider struct{}
 
