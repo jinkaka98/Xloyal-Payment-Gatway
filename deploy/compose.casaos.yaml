@@ -75,11 +75,15 @@ services:
     environment:
       NEKO_DESKTOP_SCREEN: 1440x900@30
       NEKO_SESSION_COOKIE_ENABLED: "true"
-      NEKO_SESSION_COOKIE_SECURE: "true"
+      # CasaOS is also accessed over LAN HTTP. A Secure cookie cannot persist
+      # there, so Neko would show the login form again after every submit.
+      NEKO_SESSION_COOKIE_SECURE: "false"
       NEKO_WEBRTC_ICELITE: "true"
-      NEKO_WEBRTC_EPR: 52000-52010
+      NEKO_WEBRTC_NAT1TO1: 192.168.1.20
+      NEKO_WEBRTC_UDPMUX: "52000"
     volumes:
       - /DATA/AppData/xloyal/neko:/home/neko/.config/chromium
+    ports: ["0.0.0.0:52000:52000/udp"]
     restart: unless-stopped
 
   edge:
