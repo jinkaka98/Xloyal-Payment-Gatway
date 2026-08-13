@@ -3,6 +3,14 @@ set -eu
 exec 9>/run/lock/xloyal-deploy.lock
 flock -n 9 || exit 0
 
+if [ -f /DATA/AppData/xloyal/github.env ]; then
+  . /DATA/AppData/xloyal/github.env
+fi
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  export GITHUB_TOKEN GIT_ASKPASS=/usr/local/lib/xloyal-git-askpass
+fi
+export GIT_TERMINAL_PROMPT=0
+
 repository=https://github.com/jinkaka98/Xloyal-Payment-Gatway.git
 mirror=/DATA/projects/xloyal/repository.git
 releases=/DATA/projects/xloyal/releases
