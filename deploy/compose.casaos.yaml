@@ -78,6 +78,9 @@ services:
       # CasaOS is also accessed over LAN HTTP. A Secure cookie cannot persist
       # there, so Neko would show the login form again after every submit.
       NEKO_SESSION_COOKIE_SECURE: "false"
+      # Neko is mounted under /browser. Without this the login response scopes
+      # the token to /browser/api and the /browser/ws WebSocket loses it.
+      NEKO_SESSION_COOKIE_PATH: /browser
       NEKO_WEBRTC_ICELITE: "true"
       NEKO_WEBRTC_NAT1TO1: 192.168.1.20
       NEKO_WEBRTC_UDPMUX: "52000"
