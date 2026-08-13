@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/chromedp/chromedp"
+	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/target"
 )
 
 type request struct {
@@ -30,7 +32,23 @@ func main() {
 	defer cancel()
 	allocator, cancelAllocator := chromedp.NewRemoteAllocator(ctx, cdpURL)
 	defer cancelAllocator()
-	browserCtx, cancelBrowser := chromedp.NewContext(allocator)
+	// Neko owns the visual Chromium tab. Attach to that tab rather than asking
+	// Chromium to create a background target, which it rejects for remote CDP.
+	targets, err := target.GetTargets().Do(cdp.WithExecutor(allocator, nil))
+	if err != nil {
+		fail("cannot inspect Neko browser: " + err.Error())
+	}
+	var targetID target.ID
+	for _, item := range targets {
+		if item.Type == "page" {
+			targetID = item.TargetID
+			break
+		}
+	}
+	if targetID == "" {
+		fail("Neko has no browser page to attach")
+	}
+	browserCtx, cancelBrowser := chromedp.NewContext(allocator, chromedp.WithTargetID(targetID))
 	defer cancelBrowser()
 
 	// This targets the same persistent Chromium profile displayed by Neko.
