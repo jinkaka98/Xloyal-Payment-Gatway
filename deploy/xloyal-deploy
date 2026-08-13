@@ -3,6 +3,10 @@ set -eu
 exec 9>/run/lock/xloyal-deploy.lock
 flock -n 9 || exit 0
 . /DATA/AppData/xloyal/github.env
+if [ -z "${GITHUB_TOKEN:-}" ]; then
+  echo "GITHUB_TOKEN is not configured; leaving webhook signal queued" >&2
+  exit 0
+fi
 export GITHUB_TOKEN GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/usr/local/lib/xloyal-git-askpass
 repo=/DATA/projects/xloyal/current
 compose=/var/lib/casaos/apps/xloyal/docker-compose.yml

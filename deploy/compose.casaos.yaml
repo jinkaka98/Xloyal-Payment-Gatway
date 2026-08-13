@@ -14,11 +14,17 @@ services:
 
   migrate:
     build: { context: /DATA/projects/xloyal/current, dockerfile: deploy/backend.Dockerfile, target: runtime }
-    entrypoint: ["/bin/sh", "/migrations/migrate.sh"]
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        /usr/local/bin/migrate /migrations/000_bootstrap_core.sql
+        for migration in /migrations/004_merchant_connector.sql /migrations/007_restore_admin_feature_schema.sql /migrations/005_browser_credentials.sql /migrations/006_worker_test_payment_columns.sql /migrations/008_merchant_history_backfill.sql; do
+          /usr/local/bin/migrate "$$migration"
+        done
     env_file: /DATA/AppData/xloyal/runtime.env
     volumes:
       - /DATA/projects/xloyal/current/backend/migrations:/migrations:ro
-      - /DATA/projects/xloyal/current/deploy/migrate.sh:/migrations/migrate.sh:ro
     depends_on: { postgres: { condition: service_healthy } }
     restart: "no"
 
