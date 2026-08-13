@@ -73,6 +73,9 @@ services:
     shm_size: 2gb
     env_file: /DATA/AppData/xloyal/runtime.env
     environment:
+      # Legacy mode uses its own token-only WebSocket flow and rejects the
+      # cookie session created by the multiuser login endpoint.
+      NEKO_LEGACY: "false"
       NEKO_DESKTOP_SCREEN: 1440x900@30
       NEKO_SESSION_COOKIE_ENABLED: "true"
       # CasaOS is also accessed over LAN HTTP. A Secure cookie cannot persist
