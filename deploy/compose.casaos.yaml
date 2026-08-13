@@ -73,17 +73,15 @@ services:
     shm_size: 2gb
     env_file: /DATA/AppData/xloyal/runtime.env
     environment:
-      # Legacy mode uses its own token-only WebSocket flow and rejects the
-      # cookie session created by the multiuser login endpoint.
-      NEKO_LEGACY: "false"
+      # The bundled Neko web client connects through the legacy WebSocket and
+      # passes credentials in its query string.
+      NEKO_LEGACY: "true"
       NEKO_DESKTOP_SCREEN: 1440x900@30
-      NEKO_SESSION_COOKIE_ENABLED: "true"
-      # CasaOS is also accessed over LAN HTTP. A Secure cookie cannot persist
-      # there, so Neko would show the login form again after every submit.
+      # Cookie auth conflicts with the bundled legacy client and produces
+      # "token not found". The WebSocket authenticates with the entered Neko
+      # password instead.
+      NEKO_SESSION_COOKIE_ENABLED: "false"
       NEKO_SESSION_COOKIE_SECURE: "false"
-      # Neko is mounted under /browser. Without this the login response scopes
-      # the token to /browser/api and the /browser/ws WebSocket loses it.
-      NEKO_SESSION_COOKIE_PATH: /browser
       NEKO_WEBRTC_ICELITE: "true"
       NEKO_WEBRTC_NAT1TO1: 192.168.1.20
       NEKO_WEBRTC_UDPMUX: "52000"
