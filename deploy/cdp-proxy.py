@@ -18,7 +18,7 @@ async def bridge(reader, writer):
     upstream_writer = None
     tasks = set()
     try:
-        upstream_reader, upstream_writer = await asyncio.open_connection("127.0.0.1", 9222)
+        upstream_reader, upstream_writer = await asyncio.open_connection("127.0.0.1", 9223)
         tasks = {
             asyncio.create_task(_pipe(reader, upstream_writer)),
             asyncio.create_task(_pipe(upstream_reader, writer)),
