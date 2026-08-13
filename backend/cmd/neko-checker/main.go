@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/chromedp/chromedp"
-	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
+	"github.com/chromedp/chromedp"
 )
 
 type request struct {
@@ -32,22 +32,7 @@ func main() {
 	defer cancel()
 	allocator, cancelAllocator := chromedp.NewRemoteAllocator(ctx, cdpURL)
 	defer cancelAllocator()
-	// Neko owns the visual Chromium tab. Attach to that tab rather than asking
-	// Chromium to create a background target, which it rejects for remote CDP.
-	targets, err := target.GetTargets().Do(cdp.WithExecutor(allocator, nil))
-	if err != nil {
-		fail("cannot inspect Neko browser: " + err.Error())
-	}
-	var targetID target.ID
-	for _, item := range targets {
-		if item.Type == "page" {
-			targetID = item.TargetID
-			break
-		}
-	}
-	if targetID == "" {
-		fail("Neko has no browser page to attach")
-	}
+	targetID := activePageTarget(cdpURL)
 	browserCtx, cancelBrowser := chromedp.NewContext(allocator, chromedp.WithTargetID(targetID))
 	defer cancelBrowser()
 
@@ -75,6 +60,32 @@ func env(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func activePageTarget(cdpURL string) target.ID {
+	client := &http.Client{Timeout: 10 * time.Second}
+	response, err := client.Get(strings.TrimRight(cdpURL, "/") + "/json/list")
+	if err != nil {
+		fail("cannot inspect Neko browser: " + err.Error())
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		fail("cannot inspect Neko browser: " + response.Status)
+	}
+	var pages []struct {
+		ID   target.ID `json:"id"`
+		Type string    `json:"type"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&pages); err != nil {
+		fail("cannot decode Neko browser tabs: " + err.Error())
+	}
+	for _, page := range pages {
+		if page.Type == "page" {
+			return page.ID
+		}
+	}
+	fail("Neko has no browser page to attach")
+	return ""
 }
 
 func fail(message string) { fmt.Fprintln(os.Stderr, message); os.Exit(1) }
