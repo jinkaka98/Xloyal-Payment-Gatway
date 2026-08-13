@@ -5,6 +5,12 @@ import { SESSION_COOKIE, verifySessionToken } from "@/lib/session";
 const API_URL = process.env.INTERNAL_API_URL ?? "http://127.0.0.1:8080";
 const idPattern = /^[a-f0-9]{32}$/;
 const loopbackHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+const configuredOrigins = new Set(
+  (process.env.TRUSTED_CONSOLE_ORIGINS ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+);
 
 async function authorize() {
   return verifySessionToken(
@@ -36,6 +42,7 @@ function adminPath(method: string, path: string[]) {
 function trustedOrigin(origin: string, requestURL: string) {
   try {
     const supplied = new URL(origin);
+    if (configuredOrigins.has(supplied.origin)) return true;
     const expected = new URL(requestURL);
     if (supplied.protocol !== expected.protocol || supplied.port !== expected.port) return false;
     return supplied.hostname === expected.hostname || (loopbackHosts.has(supplied.hostname) && loopbackHosts.has(expected.hostname));

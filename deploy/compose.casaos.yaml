@@ -37,7 +37,7 @@ services:
     volumes:
       - /DATA/AppData/xloyal/signals:/run/xloyal
     depends_on: { migrate: { condition: service_completed_successfully } }
-    ports: ["127.0.0.1:1970:8080"]
+    ports: ["0.0.0.0:1970:8080"]
     healthcheck: { test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/v1/health"], interval: 10s, timeout: 3s, retries: 10 }
     restart: unless-stopped
 
@@ -80,6 +80,23 @@ services:
     volumes:
       - /DATA/projects/xloyal/current/deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - /DATA/projects/xloyal/current/deploy/nginx-global.conf:/etc/nginx/conf.d/00-global.conf:ro
-    ports: ["127.0.0.1:5656:8080"]
+    ports: ["0.0.0.0:5656:8080"]
     depends_on: { web: { condition: service_started }, neko: { condition: service_started } }
     restart: unless-stopped
+
+x-casaos:
+  architectures: [amd64]
+  author: Xloyal
+  category: Finance
+  description:
+    en_us: Xloyal QRIS payment operations console
+  hostname: 192.168.1.20
+  icon: /img/default.0a7cfbf2.svg
+  index: /
+  is_uncontrolled: false
+  main: edge
+  port_map: "5656"
+  scheme: http
+  store_app_id: xloyal
+  title:
+    en_us: Xloyal Payment Gateway

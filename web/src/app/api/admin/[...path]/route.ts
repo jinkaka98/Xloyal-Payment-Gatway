@@ -13,6 +13,7 @@ function resolvePath(method: string, parts: string[]) {
   if (resource === "merchant-accounts" && parts.length === 2 && id && merchantID.test(id) && ["GET", "PUT"].includes(method)) return `/admin/merchant-accounts/${id}`;
   if (resource === "tenants" && parts.length === 1 && ["GET", "POST"].includes(method)) return "/admin/tenants";
   if (resource === "tenants" && parts.length === 2 && id && merchantID.test(id) && method === "PUT") return `/admin/tenants/${id}`;
+  if (resource === "merchant-ids" && parts.length === 1 && method === "POST") return "/admin/merchant-ids";
   if (resource === "merchant-connections" && parts.length === 2 && id === "har" && method === "POST") return "/admin/merchant-connections/har";
   if (resource !== "merchant-ids" || !id || !merchantID.test(id)) return "";
   if (parts.length === 2 && method === "GET") return `/admin/merchant-ids/${id}`;
