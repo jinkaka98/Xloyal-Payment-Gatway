@@ -37,9 +37,7 @@ func main() {
 	cdpURL := env("NEKO_CDP_URL", "http://neko:9222")
 	portalURL := env("WEBWRIGHT_PORTAL_URL", "https://merchant.qris.interactive.co.id")
 	page := portalPage(cdpURL, portalURL)
-	activatePage(cdpURL, page.ID)
-
-	if input.Credential != nil && input.Credential.Email != "" && input.Credential.Password != "" && isLoginPage(page.URL) {
+	if input.Credential != nil && input.Credential.Email != "" && input.Credential.Password != "" {
 		fillLogin(page.WebSocketDebuggerURL, input.Credential.Email, input.Credential.Password)
 	}
 	if os.Getenv("WEBWRIGHT_MANUAL_LOGIN") == "true" {
@@ -47,10 +45,7 @@ func main() {
 		fmt.Print(`{"transactions":[]}` + "\n")
 		return
 	}
-	page = pageByID(cdpURL, page.ID)
-	if isLoginPage(page.URL) {
-		fail("portal login or reCAPTCHA is required in Neko")
-	}
+	waitForPortalLogin(cdpURL, page.ID)
 	fmt.Print(`{"transactions":[]}` + "\n")
 }
 
@@ -63,19 +58,27 @@ func env(name, fallback string) string {
 
 func pages(cdpURL string) []pageTarget {
 	client := &http.Client{Timeout: 10 * time.Second}
-	response, err := client.Get(strings.TrimRight(cdpURL, "/") + "/json/list")
-	if err != nil {
-		fail("cannot inspect Neko browser: " + err.Error())
+	var last string
+	for attempt := 0; attempt < 5; attempt++ {
+		response, err := client.Get(strings.TrimRight(cdpURL, "/") + "/json/list")
+		if err == nil && response.StatusCode == http.StatusOK {
+			var result []pageTarget
+			err = json.NewDecoder(response.Body).Decode(&result)
+			response.Body.Close()
+			if err == nil {
+				return result
+			}
+		}
+		if response != nil {
+			response.Body.Close()
+			last = response.Status
+		} else if err != nil {
+			last = err.Error()
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		fail("cannot inspect Neko browser: " + response.Status)
-	}
-	var result []pageTarget
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
-		fail("cannot decode Neko browser tabs: " + err.Error())
-	}
-	return result
+	fail("cannot inspect Neko browser: " + last)
+	return nil
 }
 
 func portalPage(cdpURL, portalURL string) pageTarget {
@@ -110,38 +113,41 @@ func pageByID(cdpURL, id string) pageTarget {
 	return pageTarget{}
 }
 
-func activatePage(cdpURL, id string) {
-	response, err := http.Get(strings.TrimRight(cdpURL, "/") + "/json/activate/" + id)
-	if err != nil || response.StatusCode != http.StatusOK {
-		fail("cannot activate the Neko portal tab")
-	}
-	response.Body.Close()
-}
-
 func fillLogin(wsURL, email, password string) {
 	conn, _, _, err := ws.Dial(context.Background(), wsURL)
 	if err != nil {
 		fail("cannot control the Neko portal tab: " + err.Error())
 	}
 	defer conn.Close()
-	expression := fmt.Sprintf(`(() => {
-		const set = (el, value) => { if (!el) return false; const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; setter.call(el, value); el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return true; };
-		const email = document.querySelector('input[type=email], input[name*=email i], input[type=text]');
-		const password = document.querySelector('input[type=password]');
-		set(email, %s); set(password, %s);
-		const submit = document.querySelector('button[type=submit], input[type=submit]'); if (submit) submit.click();
-		return Boolean(email && password);
-	})()`, jsString(email), jsString(password))
-	command, _ := json.Marshal(map[string]any{"id": 1, "method": "Runtime.evaluate", "params": map[string]any{"expression": expression, "awaitPromise": true}})
-	if err := wsutil.WriteClientText(conn, command); err != nil {
-		fail("cannot fill portal credentials: " + err.Error())
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		expression := fmt.Sprintf(`(() => {
+			const set = (el, value) => { if (!el) return false; const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set; if (setter) setter.call(el, value); else el.value = value; for (const type of ['input','change','blur']) el.dispatchEvent(new Event(type, {bubbles:true})); return true; };
+			const email = document.querySelector('input[type=email], input[name*=email i], input[name*=username i], input[type=text]');
+			const password = document.querySelector('input[type=password]');
+			const ready = set(email, %s) && set(password, %s);
+			if (ready) { const submit = document.querySelector('button[type=submit], input[type=submit], button.login, button'); if (submit && !submit.disabled) submit.click(); }
+			return ready;
+		})()`, jsString(email), jsString(password))
+		command, _ := json.Marshal(map[string]any{"id": 1, "method": "Runtime.evaluate", "params": map[string]any{"expression": expression, "returnByValue": true, "awaitPromise": true}})
+		if err := wsutil.WriteClientText(conn, command); err != nil {
+			fail("cannot fill portal credentials: " + err.Error())
+		}
+		if _, _, err := wsutil.ReadClientData(conn); err != nil {
+			fail("cannot verify portal form: " + err.Error())
+		}
+		return
+		// The page can still be loading; retry the same persistent tab.
+		time.Sleep(500 * time.Millisecond)
 	}
+	fail("portal login form did not become ready in Neko")
 }
 
 func waitForPortalLogin(cdpURL, id string) {
 	deadline := time.Now().Add(10 * time.Minute)
 	for time.Now().Before(deadline) {
-		if !isLoginPage(pageByID(cdpURL, id).URL) {
+		page := pageByID(cdpURL, id)
+		if !isLoginPage(page.URL) {
 			return
 		}
 		time.Sleep(2 * time.Second)
