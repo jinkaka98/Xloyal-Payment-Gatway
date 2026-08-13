@@ -5,7 +5,8 @@ RUN go mod download
 COPY backend ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/api ./cmd/api && \
     CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/worker ./cmd/worker && \
-    CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/migrate ./cmd/migrate
+    CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/migrate ./cmd/migrate && \
+    CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/neko-checker ./cmd/neko-checker
 
 FROM alpine:3.21 AS runtime
 RUN addgroup -S xloyal && adduser -S -G xloyal xloyal && apk add --no-cache ca-certificates curl

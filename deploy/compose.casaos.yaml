@@ -34,6 +34,8 @@ services:
     environment:
       HTTP_ADDR: :8080
       GITHUB_WEBHOOK_SIGNAL_PATH: /run/xloyal/deploy-request
+      CAMOUFOX_CHECKER_CMD: /usr/local/bin/neko-checker
+      NEKO_CDP_URL: http://neko:9222
     volumes:
       - /DATA/AppData/xloyal/signals:/run/xloyal
     depends_on: { migrate: { condition: service_completed_successfully } }
@@ -45,6 +47,9 @@ services:
     build: { context: /DATA/projects/xloyal/current, dockerfile: deploy/backend.Dockerfile, target: runtime }
     entrypoint: ["/usr/local/bin/worker"]
     env_file: /DATA/AppData/xloyal/runtime.env
+    environment:
+      CAMOUFOX_CHECKER_CMD: /usr/local/bin/neko-checker
+      NEKO_CDP_URL: http://neko:9222
     depends_on: { migrate: { condition: service_completed_successfully } }
     restart: unless-stopped
 
@@ -62,7 +67,9 @@ services:
     restart: unless-stopped
 
   neko:
-    image: ghcr.io/m1k1o/neko/chromium:latest
+    build:
+      context: /DATA/projects/xloyal/current
+      dockerfile: deploy/neko.Dockerfile
     shm_size: 2gb
     env_file: /DATA/AppData/xloyal/runtime.env
     environment:
