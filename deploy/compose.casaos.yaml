@@ -76,6 +76,9 @@ services:
       # The bundled Neko web client connects through the legacy WebSocket and
       # passes credentials in its query string.
       NEKO_LEGACY: "true"
+      NEKO_IMPLICIT_CONTROL: "true"
+      NEKO_SESSION_IMPLICIT_HOSTING: "true"
+      NEKO_SESSION_LOCKED_CONTROLS: "false"
       NEKO_DESKTOP_SCREEN: 1440x900@30
       # Cookie auth conflicts with the bundled legacy client and produces
       # "token not found". The WebSocket authenticates with the entered Neko
