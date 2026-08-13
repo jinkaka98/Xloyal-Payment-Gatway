@@ -101,12 +101,14 @@ function TenantAccessNotice() {
 function TenantDocumentation({ tenant }: { tenant: Tenant }) {
   const id = tenant.id;
   const apiBase = "https://api.payment.example.com";
+  const adminBase = "https://dashboard.payment.example.com";
   return <div className="tenant-docs">
     <div className="tenant-domain-map" aria-label="Peta arah domain payment gateway">
-      <section><span>DOMAIN 1</span><Monitor size={18} /><div><strong>Admin Web</strong><code>https://dashboard.payment.example.com</code><p>Hanya untuk login operator dan dashboard. Arahkan ke service web port 3000. Jangan gunakan domain ini dari aplikasi tenant.</p></div></section>
+      <section><span>DOMAIN 1</span><Monitor size={18} /><div><strong>Admin Web</strong><code>{adminBase}</code><p>Hanya untuk login operator dan dashboard. Arahkan ke service web port 3000. Jangan gunakan domain ini dari aplikasi tenant.</p></div></section>
       <section><span>DOMAIN 2</span><Server size={18} /><div><strong>Tenant API</strong><code>{apiBase}</code><p>Semua request tenant ke <code>/v1/*</code> memakai domain ini. Arahkan langsung ke backend API port 8080 melalui HTTPS.</p></div></section>
-      <div className="tenant-domain-flow"><strong>Alur yang benar</strong><code>Aplikasi tenant → api.payment.example.com/v1/* → Backend API → Worker browser internal</code><p>Browser worker tidak memiliki domain public dan tidak boleh dipanggil langsung oleh tenant.</p></div>
+      <div className="tenant-domain-flow"><strong>Alur yang benar</strong><code>Aplikasi tenant → {apiBase}/v1/* → Backend API</code><p>Browser worker tidak memiliki domain public dan tidak boleh dipanggil langsung oleh tenant.</p></div>
     </div>
+    <div className="tenant-api-routes"><KeyRound size={17} /><div><strong>Base URL pihak ketiga (InterActive)</strong><code>API QRIS: https://qris.interactive.co.id</code><code>Portal browser: https://merchant.qris.interactive.co.id</code><p>Backend API memanggil <code>qris.interactive.co.id</code> untuk membuat dan mengecek invoice. Browser worker mengakses <code>merchant.qris.interactive.co.id</code> untuk sinkronisasi history. Keduanya bukan endpoint tenant.</p></div></div>
     <p>Ganti kedua domain contoh sesuai domain produksi Anda. Kirim <code>X-API-Key: YOUR_API_KEY</code> hanya ke domain Tenant API; API key tidak dapat dibaca kembali dari console.</p>
     <div className="tenant-doc-endpoint"><strong><span>POST</span>Buat QRIS dinamis dari template</strong><code>{apiBase}/v1/tenants/{id}/qris/dynamic</code><pre>{`{\n  "template_id": "QRIS_TEMPLATE_ID",\n  "amount": 50000\n}`}</pre><p>Respons berisi payload dan gambar PNG base64. Template harus aktif, dapat diakses tenant ini, dan mengikuti rate limit yang diatur dari QRIS Control.</p></div>
     <div className="tenant-doc-endpoint"><strong><span>POST</span>Buat invoice QRIS</strong><code>{apiBase}/v1/tenants/{id}/invoices</code><pre>{`{\n  "merchant_account_id": "MERCHANT_ACCOUNT_ID",\n  "idempotency_key": "ORDER_UNIQUE_ID",\n  "amount": 50000,\n  "currency": "IDR",\n  "description": "Pembayaran order"\n}`}</pre></div>

@@ -19,7 +19,7 @@ func TestOpenAPIContracts(t *testing.T) {
 		if r.URL.Path == "/create" {
 			q := r.URL.Query()
 			createOK = r.Method == http.MethodGet && q.Get("do") == "create-invoice" && q.Get("apikey") == "fixture-token" && q.Get("mID") == "merchant-fixture" && q.Get("cliTrxNumber") == "inv-1" && q.Get("cliTrxAmount") == "1000" && q.Get("useTip") == "no"
-			json.NewEncoder(w).Encode(map[string]any{"status": "success", "data": map[string]string{"qris_content": "000201fixture", "qris_request_date": "2026-01-01", "qris_invoiceid": "ref-1", "qris_nmid": "NMIDFIXTURE"}})
+			json.NewEncoder(w).Encode(map[string]any{"status": "success", "data": map[string]string{"qris_content": "000201fixture", "qris_request_date": "2026-01-01 11:13:42", "qris_invoiceid": "ref-1", "qris_nmid": "NMIDFIXTURE"}})
 			return
 		}
 		q := r.URL.Query()
@@ -32,10 +32,10 @@ func TestOpenAPIContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := p.CreatePayment(context.Background(), domain.CreatePaymentRequest{InvoiceID: "inv-1", Amount: 1000})
-	if err != nil || created.ProviderReference != "ref-1" || created.ProviderRequestDate != "2026-01-01" {
+	if err != nil || created.ProviderReference != "ref-1" || created.ProviderRequestDate != "2026-01-01 11:13:42" {
 		t.Fatal(created, err)
 	}
-	checked, err := p.CheckPayment(context.Background(), domain.CheckPaymentRequest{ProviderInvoiceID: "ref-1", Amount: 1000, RequestDate: "2026-01-01"})
+	checked, err := p.CheckPayment(context.Background(), domain.CheckPaymentRequest{ProviderInvoiceID: "ref-1", Amount: 1000, RequestDate: created.ProviderRequestDate})
 	if err != nil || checked.Status != domain.InvoicePaid || !createOK || !checkOK {
 		t.Fatal(checked, err, createOK, checkOK)
 	}
@@ -43,6 +43,23 @@ func TestOpenAPIContracts(t *testing.T) {
 func TestOpenAPIMapsUnpaidToPending(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"status": "success", "data": map[string]string{"qris_status": "unpaid"}})
+	}))
+	defer s.Close()
+	p, err := NewOpenAPI(OpenAPIConfig{BaseURL: s.URL, CheckPath: "/check", MerchantID: "merchant-fixture", APIKey: "fixture-token", Client: s.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.CheckPayment(context.Background(), domain.CheckPaymentRequest{})
+	if err != nil || got.Status != domain.InvoicePending {
+		t.Fatalf("status=%q err=%v", got.Status, err)
+	}
+}
+
+func TestOpenAPIMapsFailedUnpaidToPending(t *testing.T) {
+	// InterActive's documented check-status "failed" example still reports
+	// qris_status "unpaid", which must map to pending rather than error.
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"status": "failed", "data": map[string]string{"qris_status": "unpaid"}})
 	}))
 	defer s.Close()
 	p, err := NewOpenAPI(OpenAPIConfig{BaseURL: s.URL, CheckPath: "/check", MerchantID: "merchant-fixture", APIKey: "fixture-token", Client: s.Client()})
@@ -75,6 +92,34 @@ func TestOpenAPIRejectsInsecureProductionURLAndInvalidQR(t *testing.T) {
 	}
 	if _, err = p.CreatePayment(context.Background(), domain.CreatePaymentRequest{InvoiceID: "invoice", Amount: 1000}); err == nil {
 		t.Fatal("invalid QR payload accepted")
+	}
+}
+
+func TestOpenAPIHealthAcceptsDocumentedFailedUnpaid(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"status": "failed", "data": map[string]string{"qris_status": "unpaid"}})
+	}))
+	defer s.Close()
+	p, err := NewOpenAPI(OpenAPIConfig{BaseURL: s.URL, CheckPath: "/check", MerchantID: "merchant", APIKey: "token", Client: s.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Health(context.Background()); err != nil {
+		t.Fatalf("documented failed+unpaid response should be healthy, got %v", err)
+	}
+}
+
+func TestOpenAPIHealthRejectsInvalidCredentialResponse(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"status": "failed", "message": "invalid apikey"})
+	}))
+	defer s.Close()
+	p, err := NewOpenAPI(OpenAPIConfig{BaseURL: s.URL, CheckPath: "/check", MerchantID: "merchant", APIKey: "token", Client: s.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Health(context.Background()); err == nil {
+		t.Fatal("missing qris_status should fail health")
 	}
 }
 

@@ -175,6 +175,20 @@ func (r *Repository) MerchantAccount(ctx context.Context, tenant, id string) (do
 	err := r.DB.QueryRowContext(ctx, `SELECT id,tenant_id,provider,name,credential_ciphertext,active,created_at FROM merchant_accounts WHERE id=$1 AND tenant_id=$2`, id, tenant).Scan(&v.ID, &v.TenantID, &v.Provider, &v.Name, &v.CredentialCiphertext, &v.Active, &v.CreatedAt)
 	return v, notFound(err)
 }
+func (r *Repository) UpdateMerchantAccount(ctx context.Context, v domain.MerchantAccount) error {
+	res, err := r.DB.ExecContext(ctx, `UPDATE merchant_accounts SET tenant_id=$2, provider=$3, name=$4, credential_ciphertext=$5, active=$6 WHERE id=$1`, v.ID, v.TenantID, v.Provider, v.Name, v.CredentialCiphertext, v.Active)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
 func (r *Repository) ListMerchantAccounts(ctx context.Context, tenant string) ([]domain.MerchantAccount, error) {
 	q := `SELECT id,tenant_id,provider,name,credential_ciphertext,active,created_at FROM merchant_accounts`
 	args := []any{}

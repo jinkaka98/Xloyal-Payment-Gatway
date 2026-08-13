@@ -10,6 +10,7 @@ function resolvePath(method: string, parts: string[]) {
   const [resource, id, connection, action] = parts;
   const getResources = new Set(["health", "qris-templates", "qris-test-payments", "merchant-accounts", "dashboard", "invoices", "audit-events", "merchant-transactions", "global-transactions", "merchant-ids"]);
   if (parts.length === 1 && method === "GET" && resource && getResources.has(resource)) return `/admin/${resource}`;
+  if (resource === "merchant-accounts" && parts.length === 2 && id && merchantID.test(id) && ["GET", "PUT"].includes(method)) return `/admin/merchant-accounts/${id}`;
   if (resource === "tenants" && parts.length === 1 && ["GET", "POST"].includes(method)) return "/admin/tenants";
   if (resource === "tenants" && parts.length === 2 && id && merchantID.test(id) && method === "PUT") return `/admin/tenants/${id}`;
   if (resource === "merchant-connections" && parts.length === 2 && id === "har" && method === "POST") return "/admin/merchant-connections/har";

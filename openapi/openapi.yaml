@@ -109,6 +109,25 @@
         "responses": {"201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MerchantAccount"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/Problem"}}
       }
     },
+    "/admin/merchant-accounts/{id}": {
+      "get": {
+        "tags": ["Admin"], "operationId": "getMerchantAccount", "security": [{"AdminBearer": []}],
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}},
+          {"name": "tenant_id", "in": "query", "required": true, "schema": {"type": "string"}}
+        ],
+        "responses": {"200": {"description": "Merchant account with non-secret provider fields", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MerchantAccountDetail"}}}}, "403": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
+      },
+      "put": {
+        "tags": ["Admin"], "operationId": "updateMerchantAccount", "security": [{"AdminBearer": []}],
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}},
+          {"name": "tenant_id", "in": "query", "required": true, "schema": {"type": "string"}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateMerchantAccount"}}}},
+        "responses": {"200": {"description": "Updated merchant account", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MerchantAccountDetail"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
     "/admin/merchant-accounts/{id}/test-connection": {
       "post": {
         "tags": ["Admin"], "operationId": "testMerchantConnection", "security": [{"AdminBearer": []}],
@@ -277,6 +296,29 @@
       "MerchantAccount": {
         "type": "object", "required": ["id", "tenant_id", "provider", "name", "active", "created_at"],
         "properties": {"id": {"type": "string"}, "tenant_id": {"type": "string"}, "provider": {"type": "string"}, "name": {"type": "string"}, "active": {"type": "boolean"}, "created_at": {"type": "string", "format": "date-time"}}
+      },
+      "MerchantAccountDetail": {
+        "type": "object", "required": ["id", "tenant_id", "provider", "name", "active", "created_at", "merchant_id", "base_url"],
+        "properties": {
+          "id": {"type": "string"}, "tenant_id": {"type": "string"}, "provider": {"type": "string"}, "name": {"type": "string"},
+          "active": {"type": "boolean"}, "created_at": {"type": "string", "format": "date-time"},
+          "merchant_id": {"type": "string"}, "base_url": {"type": "string", "format": "uri"},
+          "create_path": {"type": "string"}, "check_path": {"type": "string"}
+        }
+      },
+      "UpdateMerchantAccount": {
+        "type": "object", "additionalProperties": false, "required": ["tenant_id", "name", "active"],
+        "properties": {
+          "tenant_id": {"type": "string"}, "name": {"type": "string"}, "active": {"type": "boolean"},
+          "credential": {
+            "type": "object", "writeOnly": true, "additionalProperties": false,
+            "required": ["base_url", "merchant_id", "api_key"],
+            "properties": {
+              "base_url": {"type": "string", "format": "uri"}, "merchant_id": {"type": "string"}, "api_key": {"type": "string"},
+              "create_path": {"type": "string"}, "check_path": {"type": "string"}
+            }
+          }
+        }
       },
       "Invoice": {
         "type": "object",

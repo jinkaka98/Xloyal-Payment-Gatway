@@ -52,7 +52,9 @@ func NewOpenAPI(cfg OpenAPIConfig) (*OpenAPI, error) {
 	}
 	if cfg.Client == nil {
 		cfg.Client = &http.Client{
-			Timeout: 10 * time.Second,
+			// InterActive documents normal check-status responses of 6–30s;
+			// keep headroom above that so valid responses are not cut off.
+			Timeout: 35 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -86,13 +88,12 @@ func (p *OpenAPI) CheckPayment(ctx context.Context, req domain.CheckPaymentReque
 			QRISStatus string `json:"qris_status"`
 		} `json:"data"`
 	}
-	q := url.Values{"do": {"checkStatus"}, "apikey": {p.cfg.APIKey}, "mID": {p.cfg.MerchantID}, "invid": {req.ProviderInvoiceID}, "trxvalue": {strconv.FormatInt(req.Amount, 10)}, "trxdate": {req.RequestDate}}
+	q := url.Values{"do": {"checkStatus"}, "apikey": {p.cfg.APIKey}, "mID": {p.cfg.MerchantID}, "invid": {req.ProviderInvoiceID}, "trxvalue": {strconv.FormatInt(req.Amount, 10)}, "trxdate": {normalizeRequestDate(req.RequestDate)}}
 	if err := p.do(ctx, p.cfg.CheckPath, q, &out); err != nil {
 		return domain.CheckPaymentResult{}, err
 	}
-	if strings.ToLower(out.Status) != "success" {
-		return domain.CheckPaymentResult{}, fmt.Errorf("provider status %q", out.Status)
-	}
+	// InterActive returns top-level "failed" for both genuine failures and the
+	// still-pending "unpaid" state, so the mapping must key off data.qris_status.
 	switch strings.ToLower(out.Data.QRISStatus) {
 	case "pending", "unpaid":
 		return domain.CheckPaymentResult{Status: domain.InvoicePending}, nil
@@ -103,11 +104,23 @@ func (p *OpenAPI) CheckPayment(ctx context.Context, req domain.CheckPaymentReque
 	case "failed", "cancelled":
 		return domain.CheckPaymentResult{Status: domain.InvoiceFailed}, nil
 	default:
-		return domain.CheckPaymentResult{}, fmt.Errorf("unknown provider status %q", out.Data.QRISStatus)
+		return domain.CheckPaymentResult{}, fmt.Errorf("unknown provider status %q (top-level %q)", out.Data.QRISStatus, out.Status)
 	}
 }
+
+func normalizeRequestDate(raw string) string {
+	raw = strings.TrimSpace(raw)
+	// Create-invoice returns "YYYY-mm-dd HH:mm:ss"; check-status requires only
+	// the "YYYY-mm-dd" date component.
+	if len(raw) >= 10 {
+		raw = raw[:10]
+	}
+	return raw
+}
 func (p *OpenAPI) Health(ctx context.Context) error {
-	q := url.Values{"do": {"checkStatus"}, "apikey": {p.cfg.APIKey}, "mID": {p.cfg.MerchantID}, "invid": {"healthcheck"}, "trxvalue": {"1"}, "trxdate": {"1970-01-01"}}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	q := url.Values{"do": {"checkStatus"}, "apikey": {p.cfg.APIKey}, "mID": {p.cfg.MerchantID}, "invid": {"healthcheck"}, "trxvalue": {"1"}, "trxdate": {normalizeRequestDate(time.Now().UTC().Format("2006-01-02"))}}
 	target, err := p.endpoint(p.cfg.CheckPath, q)
 	if err != nil {
 		return err
@@ -122,10 +135,30 @@ func (p *OpenAPI) Health(ctx context.Context) error {
 		return err
 	}
 	defer res.Body.Close()
-	if res.StatusCode < 200 || res.StatusCode >= 500 {
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return fmt.Errorf("provider HTTP status %d", res.StatusCode)
 	}
-	return nil
+	var out struct {
+		Status string `json:"status"`
+		Data   struct {
+			QRISStatus string `json:"qris_status"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&out); err != nil {
+		return fmt.Errorf("provider health response is not JSON: %w", err)
+	}
+	if strings.TrimSpace(out.Status) == "" {
+		return errors.New("provider health response missing status")
+	}
+	// A reachable endpoint that still speaks the documented check-status schema
+	// is healthy. An empty or unknown qris_status means the request was not
+	// accepted (for example invalid credentials), which must fail the check.
+	switch strings.ToLower(out.Data.QRISStatus) {
+	case "pending", "unpaid", "paid", "success", "settled", "expired", "failed", "cancelled":
+		return nil
+	default:
+		return fmt.Errorf("provider health returned unknown status %q", out.Data.QRISStatus)
+	}
 }
 func (p *OpenAPI) do(ctx context.Context, path string, q url.Values, output any) error {
 	target, err := p.endpoint(path, q)

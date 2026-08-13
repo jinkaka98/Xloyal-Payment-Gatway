@@ -60,6 +60,8 @@ func (s Server) Handler() http.Handler {
 	m.HandleFunc("GET /admin/global-transactions", s.admin("viewer", s.listGlobalTransactions))
 	m.HandleFunc("GET /admin/merchant-accounts", s.admin("viewer", s.listMerchants))
 	m.HandleFunc("POST /admin/merchant-accounts", s.admin("operator", s.createMerchant))
+	m.HandleFunc("GET /admin/merchant-accounts/{id}", s.admin("viewer", s.getMerchant))
+	m.HandleFunc("PUT /admin/merchant-accounts/{id}", s.admin("operator", s.updateMerchant))
 	m.HandleFunc("POST /admin/merchant-accounts/{id}/test-connection", s.admin("operator", s.testMerchant))
 	m.HandleFunc("GET /admin/invoices", s.admin("viewer", s.listInvoices))
 	m.HandleFunc("GET /admin/invoices/{id}", s.admin("viewer", s.getAdminInvoice))
@@ -811,6 +813,107 @@ func (s Server) testMerchant(w http.ResponseWriter, r *http.Request, _ domain.Te
 		return
 	}
 	write(w, 200, map[string]bool{"ok": true})
+}
+
+type merchantAccountView struct {
+	ID         string    `json:"id"`
+	TenantID   string    `json:"tenant_id"`
+	Provider   string    `json:"provider"`
+	Name       string    `json:"name"`
+	Active     bool      `json:"active"`
+	CreatedAt  time.Time `json:"created_at"`
+	MerchantID string    `json:"merchant_id"`
+	BaseURL    string    `json:"base_url"`
+	CreatePath string    `json:"create_path,omitempty"`
+	CheckPath  string    `json:"check_path,omitempty"`
+}
+
+func (s Server) merchantAccountView(m domain.MerchantAccount) (merchantAccountView, error) {
+	view := merchantAccountView{ID: m.ID, TenantID: m.TenantID, Provider: m.Provider, Name: m.Name, Active: m.Active, CreatedAt: m.CreatedAt}
+	plain, err := s.Cipher.Decrypt(m.CredentialCiphertext)
+	if err != nil {
+		return view, err
+	}
+	var cfg qrisprovider.OpenAPIConfig
+	if err := json.Unmarshal(plain, &cfg); err != nil {
+		return view, err
+	}
+	view.MerchantID, view.BaseURL, view.CreatePath, view.CheckPath = cfg.MerchantID, cfg.BaseURL, cfg.CreatePath, cfg.CheckPath
+	return view, nil
+}
+
+func (s Server) getMerchant(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
+	m, err := s.Repo.MerchantAccount(r.Context(), r.URL.Query().Get("tenant_id"), r.PathValue("id"))
+	if err != nil {
+		notFound(w, err)
+		return
+	}
+	view, err := s.merchantAccountView(m)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "decrypt merchant credential failed")
+		return
+	}
+	write(w, http.StatusOK, view)
+}
+
+func (s Server) updateMerchant(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
+	current, err := s.Repo.MerchantAccount(r.Context(), r.URL.Query().Get("tenant_id"), r.PathValue("id"))
+	if err != nil {
+		notFound(w, err)
+		return
+	}
+	var in struct {
+		TenantID   string          `json:"tenant_id"`
+		Name       string          `json:"name"`
+		Active     bool            `json:"active"`
+		Credential json.RawMessage `json:"credential"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	in.Name = strings.TrimSpace(in.Name)
+	in.TenantID = strings.TrimSpace(in.TenantID)
+	if in.Name == "" || in.TenantID == "" {
+		problem(w, http.StatusBadRequest, "name and tenant_id are required")
+		return
+	}
+	if target, tenantErr := s.Repo.Tenant(r.Context(), in.TenantID); tenantErr != nil || !target.Active {
+		problem(w, http.StatusBadRequest, "active Tenant ID is required")
+		return
+	}
+	current.Name, current.TenantID, current.Active = in.Name, in.TenantID, in.Active
+	if len(in.Credential) > 0 {
+		var cfg qrisprovider.OpenAPIConfig
+		if err := json.Unmarshal(in.Credential, &cfg); err != nil {
+			problem(w, http.StatusBadRequest, "invalid provider credential")
+			return
+		}
+		if _, err := qrisprovider.NewOpenAPI(cfg); err != nil {
+			problem(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		ciphertext, err := s.Cipher.Encrypt(in.Credential)
+		if err != nil {
+			problem(w, http.StatusInternalServerError, "encrypt credential failed")
+			return
+		}
+		current.CredentialCiphertext = ciphertext
+	}
+	if err := s.Repo.UpdateMerchantAccount(r.Context(), current); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			notFound(w, err)
+			return
+		}
+		problem(w, http.StatusInternalServerError, "update merchant account failed")
+		return
+	}
+	s.Repo.AppendAudit(r.Context(), domain.AuditEvent{ID: newID(), TenantID: current.TenantID, Actor: "admin", Action: "merchant_account.updated", ResourceType: "merchant_account", ResourceID: current.ID, CreatedAt: time.Now().UTC()})
+	view, err := s.merchantAccountView(current)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "decrypt merchant credential failed")
+		return
+	}
+	write(w, http.StatusOK, view)
 }
 func (s Server) listInvoices(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
 	limit, ok := listLimit(w, r)

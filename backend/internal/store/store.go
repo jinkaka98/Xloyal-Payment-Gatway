@@ -32,6 +32,7 @@ type Repository interface {
 	Tariff(context.Context, string) (domain.Tariff, error)
 	CreateMerchantAccount(context.Context, domain.MerchantAccount) error
 	MerchantAccount(context.Context, string, string) (domain.MerchantAccount, error)
+	UpdateMerchantAccount(context.Context, domain.MerchantAccount) error
 	ListMerchantAccounts(context.Context, string) ([]domain.MerchantAccount, error)
 	CreateInvoice(context.Context, domain.Invoice) (domain.Invoice, bool, error)
 	Invoice(context.Context, string, string) (domain.Invoice, error)
@@ -258,6 +259,15 @@ func (m *Memory) MerchantAccount(_ context.Context, tenant, id string) (domain.M
 		return domain.MerchantAccount{}, ErrNotFound
 	}
 	return v, nil
+}
+func (m *Memory) UpdateMerchantAccount(_ context.Context, v domain.MerchantAccount) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.merchants[v.ID]; !ok {
+		return ErrNotFound
+	}
+	m.merchants[v.ID] = v
+	return nil
 }
 func (m *Memory) ListMerchantAccounts(_ context.Context, tenant string) ([]domain.MerchantAccount, error) {
 	m.mu.Lock()

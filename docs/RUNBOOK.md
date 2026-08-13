@@ -36,7 +36,18 @@ The worker polls once per minute, processes at most 100 due invoices per pass, a
 
 ## Provider Boundary
 
-The runtime accepts only the credential-backed `interactive_qris` provider. Merchant credentials use `base_url`, `merchant_id`, `api_key`, and optional `create_path`/`check_path`. Production credentials must use `https://qris.interactive.co.id`; test clients may inject a local fixture server.
+The runtime accepts only the credential-backed `interactive_qris` provider. Merchant credentials use `base_url`, `merchant_id`, `api_key`, and optional `create_path`/`check_path`.
+
+### Third-party endpoints
+
+InterActive QRIS exposes two different hosts that must not be confused:
+
+| Purpose | Base URL | Used by |
+| --- | --- | --- |
+| QRIS API (create invoice, check status) | `https://qris.interactive.co.id` | Go API provider (`interactive_qris`) |
+| Merchant portal (login, transaction history) | `https://merchant.qris.interactive.co.id` | Browser worker / Webwright checker |
+
+Production provider credentials must set `base_url` to `https://qris.interactive.co.id`; test clients may inject a local fixture server. The merchant portal URL is a separate browser-only destination configured via `WEBWRIGHT_PORTAL_URL` and is never a tenant API endpoint.
 
 ## QRIS Test Lab
 

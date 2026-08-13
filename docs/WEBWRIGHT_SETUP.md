@@ -74,6 +74,8 @@ WEBWRIGHT_HISTORY_PATH=/v2/m/kontenr.php?idir=pages/historytrx.php
 WEBWRIGHT_TRANSACTION_ROW_SELECTOR=[data-transaction-row]
 ```
 
+`WEBWRIGHT_PORTAL_URL` adalah portal browser Merchant (`https://merchant.qris.interactive.co.id`), bukan base URL API QRIS. Base URL API provider adalah `https://qris.interactive.co.id` (lihat Runbook → Third-party endpoints).
+
 `CREDENTIAL_ENCRYPTION_KEY` harus berupa base64 tanpa padding yang setelah decode berukuran 32 byte. API dan worker harus memakai key yang sama.
 
 Untuk Docker, command harus menunjuk path yang tersedia di dalam container worker. Contoh:

@@ -25,6 +25,19 @@ export interface MerchantAccount {
   successRate: number;
 }
 
+export interface MerchantAccountDetail {
+  id: string;
+  tenant_id: string;
+  provider: string;
+  name: string;
+  active: boolean;
+  created_at: string;
+  merchant_id: string;
+  base_url: string;
+  create_path?: string;
+  check_path?: string;
+}
+
 export interface InvoiceEvent {
   id: string;
   label: string;
