@@ -38,7 +38,7 @@ func main() {
 	}
 	server := http.Server{
 		Addr:              addr,
-		Handler:           httpapi.Server{Repo: app.Repo, Gateway: app.Gateway, Cipher: app.Cipher, AdminTokens: tokens, ManualLogin: app.ManualLogin}.Handler(),
+		Handler:           httpapi.Server{Repo: app.Repo, Gateway: app.Gateway, Cipher: app.Cipher, AdminTokens: tokens, ManualLogin: app.ManualLogin, WebhookSecret: os.Getenv("GITHUB_WEBHOOK_SECRET"), WebhookSignalPath: os.Getenv("GITHUB_WEBHOOK_SIGNAL_PATH")}.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

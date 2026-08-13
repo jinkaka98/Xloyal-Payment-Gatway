@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch Xloyal GitHub webhook signals
+
+[Path]
+PathChanged=/DATA/AppData/xloyal/signals/deploy-request
+Unit=xloyal-deploy.service
+
+[Install]
+WantedBy=multi-user.target

@@ -2,14 +2,18 @@ package httpapi
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,16 +29,19 @@ import (
 )
 
 type Server struct {
-	Repo        store.Repository
-	Gateway     gateway.Service
-	Cipher      *security.Cipher
-	AdminTokens map[string]string
-	ManualLogin func(context.Context, domain.MerchantConnection) error
+	Repo              store.Repository
+	Gateway           gateway.Service
+	Cipher            *security.Cipher
+	AdminTokens       map[string]string
+	ManualLogin       func(context.Context, domain.MerchantConnection) error
+	WebhookSecret     string
+	WebhookSignalPath string
 }
 
 func (s Server) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /v1/health", s.health)
+	m.HandleFunc("POST /internal/github/webhook", s.githubWebhook)
 	m.HandleFunc("POST /v1/tenants/{tenant_id}/invoices", s.public(s.createInvoice))
 	m.HandleFunc("POST /v1/tenants/{tenant_id}/transactions/refresh", s.public(s.refreshTenantTransactions))
 	m.HandleFunc("GET /v1/tenants/{tenant_id}/transactions", s.public(s.listTenantTransactions))
@@ -76,6 +83,55 @@ func (s Server) Handler() http.Handler {
 	m.HandleFunc("GET /admin/qris-test-payments/{id}/qr", s.admin("viewer", s.testPaymentQR))
 	m.HandleFunc("GET /admin/audit-events", s.admin("viewer", s.listAudit))
 	return securityHeaders(m)
+}
+
+// githubWebhook only accepts main push events and signals the host-side deployer.
+// The API container never receives Docker or systemd privileges.
+func (s Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
+	if s.WebhookSecret == "" || s.WebhookSignalPath == "" {
+		http.NotFound(w, r)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		problem(w, http.StatusBadRequest, "invalid webhook body")
+		return
+	}
+	signature := strings.TrimPrefix(r.Header.Get("X-Hub-Signature-256"), "sha256=")
+	mac := hmac.New(sha256.New, []byte(s.WebhookSecret))
+	_, _ = mac.Write(body)
+	if len(signature) != sha256.Size*2 {
+		problem(w, http.StatusUnauthorized, "invalid webhook signature")
+		return
+	}
+	expected := fmt.Sprintf("%x", mac.Sum(nil))
+	if !hmac.Equal([]byte(signature), []byte(expected)) {
+		problem(w, http.StatusUnauthorized, "invalid webhook signature")
+		return
+	}
+	if r.Header.Get("X-GitHub-Event") != "push" {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	var payload struct {
+		Ref   string `json:"ref"`
+		After string `json:"after"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil || payload.Ref != "refs/heads/main" || len(payload.After) != 40 {
+		problem(w, http.StatusBadRequest, "main push payload required")
+		return
+	}
+	tmp := s.WebhookSignalPath + ".tmp"
+	if err := os.WriteFile(tmp, []byte(payload.After+"\n"), 0600); err != nil {
+		problem(w, http.StatusServiceUnavailable, "deployment signal unavailable")
+		return
+	}
+	if err := os.Rename(tmp, s.WebhookSignalPath); err != nil {
+		_ = os.Remove(tmp)
+		problem(w, http.StatusServiceUnavailable, "deployment signal unavailable")
+		return
+	}
+	respond(w, map[string]string{"status": "accepted", "commit": payload.After}, nil)
 }
 func (s Server) listMerchantIDs(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
 	v, err := s.Repo.ListMerchantIDs(r.Context())

@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+for migration in /migrations/007_restore_admin_feature_schema.sql /migrations/004_merchant_connector.sql /migrations/005_browser_credentials.sql /migrations/006_worker_test_payment_columns.sql /migrations/008_merchant_history_backfill.sql; do
+  /usr/local/bin/migrate "$migration"
+done

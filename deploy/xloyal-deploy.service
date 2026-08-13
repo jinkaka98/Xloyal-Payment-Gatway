@@ -1,0 +1,9 @@
+[Unit]
+Description=Deploy Xloyal Payment Gateway from GitHub main
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/DATA/AppData/xloyal/github.env
+ExecStart=/usr/local/sbin/xloyal-deploy

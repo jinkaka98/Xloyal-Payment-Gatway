@@ -1,0 +1,9 @@
+.git
+.claude-flow
+.env
+backend/.webwright-profiles
+backend/tools/Webwright-Clockbrowser
+web/.next*
+web/node_modules
+**/__pycache__
+*.log
