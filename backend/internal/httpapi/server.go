@@ -55,6 +55,7 @@ func (s Server) Handler() http.Handler {
 	m.HandleFunc("GET /admin/merchant-ids", s.admin("viewer", s.listMerchantIDs))
 	m.HandleFunc("POST /admin/merchant-ids", s.admin("operator", s.createMerchantID))
 	m.HandleFunc("GET /admin/merchant-ids/{id}/connection", s.admin("viewer", s.getMerchantConnection))
+	m.HandleFunc("PUT /admin/merchant-ids/{id}/connection/credentials", s.admin("operator", s.updateMerchantBrowserCredential))
 	m.HandleFunc("POST /admin/merchant-ids/{id}/connection/session", s.admin("operator", s.importMerchantSession))
 	m.HandleFunc("POST /admin/merchant-ids/{id}/connection/har", s.admin("operator", s.importMerchantHAR))
 	m.HandleFunc("POST /admin/merchant-connections/har", s.admin("operator", s.importDefaultMerchantHAR))
@@ -217,6 +218,38 @@ func (s Server) getMerchantConnection(w http.ResponseWriter, r *http.Request, _ 
 	v, err := s.Repo.MerchantConnection(r.Context(), r.PathValue("id"))
 	respond(w, v, err)
 }
+func (s Server) updateMerchantBrowserCredential(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
+	var in struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if strings.TrimSpace(in.Email) == "" || in.Password == "" {
+		problem(w, 400, "email and password are required")
+		return
+	}
+	connection, err := s.Repo.MerchantConnection(r.Context(), r.PathValue("id"))
+	if err != nil {
+		notFound(w, err)
+		return
+	}
+	raw, _ := json.Marshal(map[string]string{"email": strings.TrimSpace(in.Email), "password": in.Password})
+	connection.BrowserCredentialCiphertext, err = s.Cipher.Encrypt(raw)
+	if err != nil {
+		problem(w, 500, "encrypt browser credential failed")
+		return
+	}
+	connection.Status = domain.ConnectionReconnectRequired
+	connection.LastError = "Browser connection queued"
+	connection.UpdatedAt = time.Unix(0, 0).UTC()
+	if err = s.Repo.UpsertMerchantConnection(r.Context(), connection); err != nil {
+		problem(w, 500, "update browser credential failed")
+		return
+	}
+	write(w, http.StatusAccepted, map[string]string{"status": "queued"})
+}
 func (s Server) importMerchantSession(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
 	type importedCookie struct {
 		Name     string `json:"name"`
@@ -376,6 +409,10 @@ func (s Server) startManualMerchantLogin(w http.ResponseWriter, r *http.Request,
 		notFound(w, err)
 		return
 	}
+	if connection.LastError == "Manual browser login in progress" {
+		write(w, http.StatusAccepted, map[string]string{"status": "manual_login_in_progress"})
+		return
+	}
 	connection.Status = domain.ConnectionReconnectRequired
 	connection.LastError = "Manual browser login in progress"
 	connection.LastSyncedAt = nil
@@ -389,7 +426,8 @@ func (s Server) startManualMerchantLogin(w http.ResponseWriter, r *http.Request,
 }
 
 func (s Server) finishManualLogin(connection domain.MerchantConnection) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 11*time.Minute)
+	defer cancel()
 	merchantID := connection.MerchantID
 	if err := s.ManualLogin(ctx, connection); err != nil {
 		failed, lookupErr := s.Repo.MerchantConnection(ctx, merchantID)

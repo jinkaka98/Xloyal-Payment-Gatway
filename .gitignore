@@ -11,6 +11,8 @@ out/
 !.env.example
 *.log
 *.tsbuildinfo
+__pycache__/
+*.pyc
 
 # Local agent state and captured request data
 .claude-flow/

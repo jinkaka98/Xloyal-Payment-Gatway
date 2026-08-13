@@ -24,6 +24,10 @@ func main() {
 		os.Exit(1)
 	}
 	defer app.DB.Close()
+	if _, err = app.DB.Exec(`UPDATE merchant_connections SET status='reconnect_required', last_error='Manual browser login interrupted; retry required', updated_at=NOW() WHERE last_error='Manual browser login in progress' AND updated_at < NOW() - INTERVAL '1 minute'`); err != nil {
+		log.Error("manual login state recovery failed", "error", err)
+		os.Exit(1)
+	}
 	tokens := map[string]string{}
 	if raw := os.Getenv("ADMIN_TOKENS_JSON"); raw != "" {
 		err = json.Unmarshal([]byte(raw), &tokens)

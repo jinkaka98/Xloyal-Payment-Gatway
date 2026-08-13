@@ -19,7 +19,7 @@ services:
       - -ec
       - |
         /usr/local/bin/migrate /migrations/000_bootstrap_core.sql
-        for migration in /migrations/004_merchant_connector.sql /migrations/007_restore_admin_feature_schema.sql /migrations/005_browser_credentials.sql /migrations/006_worker_test_payment_columns.sql /migrations/008_merchant_history_backfill.sql; do
+        for migration in /migrations/004_merchant_connector.sql /migrations/007_restore_admin_feature_schema.sql /migrations/005_browser_credentials.sql /migrations/006_worker_test_payment_columns.sql /migrations/008_merchant_history_backfill.sql /migrations/009_test_payment_unique_code.sql; do
           /usr/local/bin/migrate "$$migration"
         done
     env_file: /DATA/AppData/xloyal/runtime.env
@@ -36,9 +36,12 @@ services:
       GITHUB_WEBHOOK_SIGNAL_PATH: /run/xloyal/deploy-request
       CAMOUFOX_CHECKER_CMD: /usr/local/bin/neko-checker
       NEKO_CDP_URL: http://neko:9222
+      NEKO_HELPER_URL: http://neko:9224/sync
     volumes:
       - /DATA/AppData/xloyal/signals:/run/xloyal
-    depends_on: { migrate: { condition: service_completed_successfully } }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      neko: { condition: service_healthy }
     ports: ["0.0.0.0:1970:8080"]
     healthcheck: { test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/v1/health"], interval: 10s, timeout: 3s, retries: 10 }
     restart: unless-stopped
@@ -50,7 +53,10 @@ services:
     environment:
       CAMOUFOX_CHECKER_CMD: /usr/local/bin/neko-checker
       NEKO_CDP_URL: http://neko:9222
-    depends_on: { migrate: { condition: service_completed_successfully } }
+      NEKO_HELPER_URL: http://neko:9224/sync
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      neko: { condition: service_healthy }
     restart: unless-stopped
 
   web:

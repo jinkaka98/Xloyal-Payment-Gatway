@@ -67,6 +67,12 @@ func (w Worker) syncMerchants(ctx context.Context, now time.Time) error {
 		return err
 	}
 	for _, connection := range connections {
+		connection.Status = domain.ConnectionReconnectRequired
+		connection.LastError = "Manual browser login in progress"
+		connection.UpdatedAt = now
+		if err := w.Repo.UpsertMerchantConnection(ctx, connection); err != nil {
+			return err
+		}
 		syncCtx, cancel := context.WithTimeout(ctx, MerchantSyncTimeout)
 		transactions, syncErr := w.SyncMerchant(syncCtx, connection)
 		cancel()

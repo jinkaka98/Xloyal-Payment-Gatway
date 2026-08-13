@@ -224,6 +224,26 @@ func TestReconnectRequiredConnectionIsProcessed(t *testing.T) {
 	}
 }
 
+func TestMerchantSyncMarksBrowserLoginInProgressBeforeCheckerStarts(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemory()
+	now := time.Date(2026, 8, 14, 4, 0, 0, 0, time.UTC)
+	repo.UpsertMerchantConnection(ctx, domain.MerchantConnection{MerchantID: "merchant_1", Status: domain.ConnectionReconnectRequired, UpdatedAt: now.Add(-10 * time.Minute)})
+	w := Worker{Repo: repo, Now: func() time.Time { return now }, SyncMerchant: func(ctx context.Context, connection domain.MerchantConnection) ([]domain.PortalTransaction, error) {
+		current, err := repo.MerchantConnection(ctx, connection.MerchantID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.LastError != "Manual browser login in progress" {
+			t.Fatalf("checker started without browser ownership state: %+v", current)
+		}
+		return nil, context.DeadlineExceeded
+	}}
+	if err := w.syncMerchants(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReconcileInvoiceMatchesByUniqueReference(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemory()

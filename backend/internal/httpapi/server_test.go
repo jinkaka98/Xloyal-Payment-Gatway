@@ -171,6 +171,28 @@ func TestManualLoginAcceptsAndQueuesSyncAfterBackgroundCompletion(t *testing.T) 
 	t.Fatalf("background completion did not queue sync: %+v", connection)
 }
 
+func TestUpdateMerchantBrowserCredentialEncryptsAndQueuesReconnect(t *testing.T) {
+	repo := store.NewMemory()
+	cipher, _ := security.NewCipher(bytes.Repeat([]byte{3}, 32))
+	repo.UpsertMerchantConnection(context.Background(), domain.MerchantConnection{MerchantID: "merchant_credential", Status: domain.ConnectionConnected, UpdatedAt: time.Now().UTC()})
+	h := Server{Repo: repo, Cipher: cipher, AdminTokens: map[string]string{"admin": "operator"}}.Handler()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/admin/merchant-ids/merchant_credential/connection/credentials", strings.NewReader(`{"email":"merchant@example.com","password":"valid-password"}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	connection, _ := repo.MerchantConnection(context.Background(), "merchant_credential")
+	if connection.Status != domain.ConnectionReconnectRequired || connection.LastError != "Browser connection queued" || !connection.UpdatedAt.Equal(time.Unix(0, 0).UTC()) {
+		t.Fatalf("connection=%+v", connection)
+	}
+	plain, err := cipher.Decrypt(connection.BrowserCredentialCiphertext)
+	if err != nil || !strings.Contains(string(plain), `"email":"merchant@example.com"`) || strings.Contains(connection.BrowserCredentialCiphertext, "valid-password") {
+		t.Fatalf("credential encryption failed")
+	}
+}
+
 func TestCreateTenantGeneratesCredentialsAndPersistsConnectivity(t *testing.T) {
 	repo := store.NewMemory()
 	repo.CreateMerchantID(context.Background(), domain.MerchantID{ID: "interactive-browser", Name: "InterActive QRIS browser", Active: true})
