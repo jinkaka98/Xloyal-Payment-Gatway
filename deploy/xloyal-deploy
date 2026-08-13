@@ -3,7 +3,14 @@ set -eu
 exec 9>/run/lock/xloyal-deploy.lock
 flock -n 9 || exit 0
 . /DATA/AppData/xloyal/github.env
-export GITHUB_TOKEN GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/usr/local/lib/xloyal-git-askpass
+export GIT_TERMINAL_PROMPT=0
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  export GITHUB_TOKEN GIT_ASKPASS=/usr/local/lib/xloyal-git-askpass
+else
+  # The deployment repository is public.  Do not inject a blank credential,
+  # because GitHub treats that as a failed authenticated request.
+  unset GIT_ASKPASS
+fi
 repo=/DATA/projects/xloyal/current
 compose=/var/lib/casaos/apps/xloyal/docker-compose.yml
 signal=/DATA/AppData/xloyal/signals/deploy-request
