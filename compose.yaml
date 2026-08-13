@@ -88,6 +88,29 @@ services:
       - merchant_browser_profiles:/home/node/.camofox
     restart: unless-stopped
 
+  neko:
+    profiles: ["neko"]
+    image: ghcr.io/m1k1o/neko/chromium:sha-395ca1a6f62b7b0e270e654d366a2d57b8042efd
+    shm_size: "2gb"
+    environment:
+      NEKO_SERVER_BIND: 0.0.0.0:8080
+      NEKO_DESKTOP_SCREEN: ${NEKO_DESKTOP_SCREEN:-1440x900@30}
+      NEKO_MEMBER_PROVIDER: multiuser
+      NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: ${NEKO_ADMIN_PASSWORD:-change-neko-admin-password}
+      NEKO_MEMBER_MULTIUSER_USER_PASSWORD: ${NEKO_USER_PASSWORD:-change-neko-user-password}
+      NEKO_SESSION_COOKIE_ENABLED: "true"
+      NEKO_SESSION_COOKIE_SECURE: ${NEKO_COOKIE_SECURE:-false}
+      NEKO_SESSION_MERCIFUL_RECONNECT: "true"
+      NEKO_WEBRTC_ICELITE: "true"
+      NEKO_WEBRTC_EPR: ${NEKO_WEBRTC_PORT:-52000}
+      NEKO_WEBRTC_NAT1TO1: ${NEKO_NAT1TO1:-127.0.0.1}
+    ports:
+      - "${NEKO_HTTP_PORT:-3001}:8080"
+      - "${NEKO_WEBRTC_PORT:-52000}:${NEKO_WEBRTC_PORT:-52000}/udp"
+    volumes:
+      - neko_browser_profile:/home/neko/.config/chromium
+    restart: unless-stopped
+
   web:
     build:
       context: .
@@ -103,6 +126,7 @@ services:
       ADMIN_CONSOLE_PASSWORD: ${ADMIN_CONSOLE_PASSWORD}
       CONSOLE_SESSION_SECRET: ${CONSOLE_SESSION_SECRET}
       CONSOLE_COOKIE_SECURE: ${CONSOLE_COOKIE_SECURE:-false}
+      NEKO_PUBLIC_URL: ${NEKO_PUBLIC_URL:-http://localhost:3001}
       PORT: "3000"
     ports:
       - "${WEB_PORT:-3000}:3000"
@@ -119,4 +143,5 @@ services:
 volumes:
   postgres_data:
   merchant_browser_profiles:
+  neko_browser_profile:
 

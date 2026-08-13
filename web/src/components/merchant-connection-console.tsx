@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Bot, KeyRound, Plus, RefreshCw, ShieldCheck, X } from "lucide-react";
+import { Bot, ExternalLink, KeyRound, Plus, RefreshCw, ShieldCheck, X } from "lucide-react";
 import type { MerchantConnection, MerchantID } from "@/lib/types";
 
 type Notice = { tone: "success" | "error"; text: string } | null;
@@ -23,19 +23,6 @@ async function postJSON(path: string, body: unknown) {
   return payload;
 }
 
-async function getConnection(merchantID: string) {
-  const response = await fetch(`/api/admin/merchant-ids/${encodeURIComponent(merchantID)}/connection`, { cache: "no-store" });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error ?? `Status koneksi gagal dibaca (${response.status}).`);
-  return payload as MerchantConnection;
-}
-
-function resultMessage(connection: MerchantConnection) {
-  if (connection.status === "connected") return { tone: "success" as const, text: "Browser terhubung dan sinkronisasi transaksi selesai." };
-  const error = connection.last_error || "Koneksi browser gagal.";
-  return { tone: "error" as const, text: error.length > 220 ? `${error.slice(0, 220)}...` : error };
-}
-
 function profileState(connection?: MerchantConnection | null) {
   if (connection?.status === "connected") return { label: "Terhubung", detail: "Profile browser aktif dan session siap digunakan." };
   if (connection?.status === "reconnect_required") return { label: "Reconnect terjadwal", detail: "Worker akan membuka profile dan login ulang secara otomatis." };
@@ -46,15 +33,15 @@ function connectionID(value: string) {
   return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-export function MerchantConnectionConsole({ merchants, connections }: { merchants: MerchantID[]; connections: Array<MerchantConnection | null | undefined> }) {
+export function MerchantConnectionConsole({ merchants, connections, nekoURL }: { merchants: MerchantID[]; connections: Array<MerchantConnection | null | undefined>; nekoURL: string }) {
   const merchant = useMemo(() => merchants.find((item) => item.id === "interactive-browser") ?? merchants[0], [merchants]);
   const connection = merchant ? connections[merchants.findIndex((item) => item.id === merchant.id)] : undefined;
   const [notice, setNotice] = useState<Notice>(null);
   const [busy, setBusy] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
-  const [manualLoginOpen, setManualLoginOpen] = useState(false);
   const [form, setForm] = useState<ConnectionForm>(emptyForm);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const loginPopupRef = useRef<Window | null>(null);
   const profile = profileState(connection);
 
   useEffect(() => {
@@ -66,46 +53,89 @@ export function MerchantConnectionConsole({ merchants, connections }: { merchant
   }, [formOpen]);
   const isConnected = connection?.status === "connected";
 
-  async function startManualLogin() {
-    if (!merchant) return;
-    setBusy(true);
+  useEffect(() => {
+    const handlePopupMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin || event.source !== loginPopupRef.current) return;
+      const data = event.data as { type?: string; merchantID?: string; status?: string };
+      if (data.type !== "merchant-connecting" || data.merchantID !== merchant?.id) return;
+      loginPopupRef.current = null;
+      if (data.status === "connected") {
+        setNotice({ tone: "success", text: "Browser terhubung. Memuat ulang status koneksi..." });
+        window.setTimeout(() => window.location.reload(), 700);
+      } else if (data.status === "failed") {
+        setNotice({ tone: "error", text: "Browser login manual gagal." });
+      }
+    };
+    window.addEventListener("message", handlePopupMessage);
+    return () => window.removeEventListener("message", handlePopupMessage);
+  }, [merchant?.id]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (loginPopupRef.current?.closed) {
+        loginPopupRef.current = null;
+        setNotice({ tone: "error", text: "Popup login ditutup sebelum koneksi selesai." });
+      }
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => () => { loginPopupRef.current?.close(); }, []);
+
+  function openLoginPopup(merchantID: string, target?: Window | null) {
     setNotice(null);
-    try {
-      await postJSON(`/api/admin/merchant-ids/${encodeURIComponent(merchant.id)}/connection/manual-login`, {});
-      setManualLoginOpen(true);
-    } catch (error) {
-      setNotice({ tone: "error", text: error instanceof Error ? error.message : "Browser login manual gagal dibuka." });
-    } finally {
-      setBusy(false);
+    const width = Math.min(520, window.screen.availWidth);
+    const height = Math.min(720, window.screen.availHeight);
+    const left = Math.max(0, Math.round((window.screen.availWidth - width) / 2));
+    const top = Math.max(0, Math.round((window.screen.availHeight - height) / 2));
+    const popup = target ?? window.open(
+      "",
+      `merchant-login-${merchantID}`,
+      `popup=yes,width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`,
+    );
+    if (!popup) {
+      setNotice({ tone: "error", text: "Popup diblokir browser. Izinkan popup untuk console ini lalu coba lagi." });
+      return null;
     }
+    popup.location.href = `/merchant-connecting/login?merchant_id=${encodeURIComponent(merchantID)}`;
+    loginPopupRef.current = popup;
+    popup.focus();
+    return popup;
   }
 
-  async function connect(merchantID = merchant?.id) {
-    if (!merchantID) return;
-    setBusy(true); setNotice(null);
-    try {
-      await postJSON(`/api/admin/merchant-ids/${encodeURIComponent(merchantID)}/sync`, {});
-      setNotice({ tone: "success", text: "Worker sedang membuka browser dan masuk ke portal..." });
-      for (let attempt = 0; attempt < 30; attempt += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, 2000));
-        const current = await getConnection(merchantID);
-        if (current.last_error !== "Browser connection queued") {
-          setNotice(resultMessage(current));
-          window.setTimeout(() => window.location.reload(), 1800);
-          return;
-        }
+  function startManualLogin() {
+    if (merchant) openLoginPopup(merchant.id);
+  }
+
+  async function connect() {
+    if (!merchant) return;
+    if (isConnected) {
+      setBusy(true);
+      setNotice(null);
+      try {
+        await postJSON(`/api/admin/merchant-ids/${encodeURIComponent(merchant.id)}/sync`, {});
+        setNotice({ tone: "success", text: "Sinkronisasi transaksi sudah masuk antrean." });
+      } catch (error) {
+        setNotice({ tone: "error", text: error instanceof Error ? error.message : "Sinkronisasi gagal dijalankan." });
+      } finally {
+        setBusy(false);
       }
-      setNotice({ tone: "error", text: "Worker belum memberi hasil setelah 60 detik. Memuat ulang status koneksi..." });
-      window.setTimeout(() => window.location.reload(), 1000);
-    } catch (error) {
-      setNotice({ tone: "error", text: error instanceof Error ? error.message : "Worker gagal dijalankan." });
-    } finally { setBusy(false); }
+      return;
+    }
+    openLoginPopup(merchant.id);
   }
 
   async function createConnection(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const id = form.id || connectionID(form.name || form.interactiveMerchantID);
     if (!id) return;
+    const popup = window.open("", `merchant-login-${id}`, "popup=yes,width=520,height=720,resizable=yes,scrollbars=yes");
+    if (!popup) {
+      setNotice({ tone: "error", text: "Popup diblokir browser. Izinkan popup sebelum menyimpan koneksi." });
+      return;
+    }
+    popup.document.title = "Menyiapkan Merchant Connecting";
+    popup.document.body.textContent = "Menyimpan koneksi dan menyiapkan browser login...";
     setBusy(true); setNotice(null);
     try {
       await postJSON("/api/admin/merchant-ids", {
@@ -117,9 +147,11 @@ export function MerchantConnectionConsole({ merchants, connections }: { merchant
       });
       setFormOpen(false);
       setForm(emptyForm);
-      await connect(id);
+      openLoginPopup(id, popup);
     } catch (error) {
+      popup.close();
       setNotice({ tone: "error", text: error instanceof Error ? error.message : "Kredensial portal gagal disimpan." });
+    } finally {
       setBusy(false);
     }
   }
@@ -131,9 +163,10 @@ export function MerchantConnectionConsole({ merchants, connections }: { merchant
       <div className="connection-step"><Bot size={17} /><div><span>Session lifecycle</span><strong>Otomatis</strong><p>Worker login ulang saat session portal kedaluwarsa.</p></div></div>
       <div className="connection-step"><ShieldCheck size={17} /><div><span>Transaction sync</span><strong>{connection?.last_synced_at ? "Aktif setiap 5 menit" : "Menunggu koneksi"}</strong><p>Transaksi yang terbaca disimpan langsung ke Global Log.</p></div></div>
     </div>
-    <div className="connection-actions">{merchant ? <><button className="button button-primary" disabled={busy} onClick={() => void connect()}>{busy ? <RefreshCw className="spin" size={17} /> : isConnected ? <RefreshCw size={17} /> : <Bot size={17} />}{busy ? "Menjalankan..." : isConnected ? "Sync sekarang" : "Hubungkan otomatis"}</button>{connection?.status === "reconnect_required" && <button className="button" disabled={busy} onClick={() => void startManualLogin()}><ShieldCheck size={17} />Selesaikan reCAPTCHA</button>}</> : <button className="button button-primary" disabled={busy} onClick={() => setFormOpen(true)}><Plus size={17} />Tambah koneksi portal</button>}</div>
+    <div className="connection-actions">{merchant ? <><button className="button button-primary" disabled={busy} onClick={() => void connect()}>{busy ? <RefreshCw className="spin" size={17} /> : isConnected ? <RefreshCw size={17} /> : <Bot size={17} />}{busy ? "Menjalankan..." : isConnected ? "Sync sekarang" : "Hubungkan otomatis"}</button>{connection?.status === "reconnect_required" && <button className="button" disabled={busy} onClick={() => void startManualLogin()}><ShieldCheck size={17} />Selesaikan reCAPTCHA</button>}{nekoURL && <a className="button" href={nekoURL} target="neko-visual-browser" rel="noreferrer"><ExternalLink size={17} />Buka Neko visual</a>}</> : <button className="button button-primary" disabled={busy} onClick={() => setFormOpen(true)}><Plus size={17} />Tambah koneksi portal</button>}</div>
+    {nekoURL && <p className="connection-hint">Neko adalah browser visual terpisah. Login di Neko tidak mengubah sesi Webwright dan tidak menandai Merchant Connecting sebagai terhubung.</p>}
     {notice && <p className={`connection-notice ${notice.tone}`}>{notice.text}</p>}
-    {manualLoginOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setManualLoginOpen(false); }}><section className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="manual-login-title"><header><div><span className="section-kicker">Manual verification</span><h2 id="manual-login-title">Selesaikan reCAPTCHA di browser</h2></div><button type="button" className="icon-button modal-close" aria-label="Tutup dialog" onClick={() => setManualLoginOpen(false)}><X size={18} /></button></header><div className="modal-panel-body"><p className="modal-intro">Browser InterActive QRIS sudah dibuka pada komputer ini dengan profil koneksi yang sama.</p><ol className="manual-login-steps"><li>Selesaikan reCAPTCHA dan klik Masuk pada jendela browser.</li><li>Pastikan dashboard atau riwayat transaksi portal sudah terbuka.</li><li>Kembali ke sini lalu jalankan sinkronisasi.</li></ol></div><footer className="modal-actions"><button type="button" className="button" onClick={() => setManualLoginOpen(false)}>Selesaikan nanti</button><button type="button" className="button button-primary" onClick={() => { setManualLoginOpen(false); void connect(); }}><RefreshCw size={17} />Saya sudah login, sync</button></footer></section></div>}
+
     {formOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setFormOpen(false); }}><form className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="merchant-connection-title" onSubmit={createConnection}><header><div><span className="section-kicker">Portal credentials</span><h2 id="merchant-connection-title">Hubungkan Merchant ID</h2></div><button ref={closeButtonRef} type="button" className="icon-button modal-close" aria-label="Tutup dialog" onClick={() => setFormOpen(false)}><X size={18} /></button></header><div className="modal-panel-body"><p className="modal-intro">Masukkan kredensial portal InterActive. Password dienkripsi sebelum disimpan dan tidak pernah ditampilkan kembali.</p><div className="merchant-connection-form"><label>Nama koneksi<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Contoh: Outlet Jakarta" /></label><label>Interactive Merchant ID<input required value={form.interactiveMerchantID} onChange={(event) => setForm({ ...form, interactiveMerchantID: event.target.value })} placeholder="Merchant ID dari portal" /></label><label>Email portal<input required type="email" autoComplete="username" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="email@merchant.id" /></label><label>Password portal<input required type="password" autoComplete="current-password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /></label></div></div><footer className="modal-actions"><button type="button" className="button" onClick={() => setFormOpen(false)}>Batal</button><button type="submit" className="button button-primary" disabled={busy}>{busy ? "Menyimpan..." : "Simpan dan hubungkan"}</button></footer></form></div>}
   </section>;
 }

@@ -57,11 +57,18 @@ func ManualLoginRunner(command string, cipher *security.Cipher) func(context.Con
 			cmd = exec.CommandContext(ctx, "sh", "-c", "WEBWRIGHT_MANUAL_LOGIN=true "+command)
 		}
 		cmd.Stdin = strings.NewReader(string(input))
-		if err = cmd.Start(); err != nil {
-			return err
+		raw, err := cmd.CombinedOutput()
+		if err == nil {
+			return nil
 		}
-		go func() { _ = cmd.Wait() }()
-		return nil
+		message := strings.TrimSpace(string(raw))
+		if len(message) > 500 {
+			message = message[len(message)-500:]
+		}
+		if message != "" {
+			return errors.New(err.Error() + ": " + message)
+		}
+		return err
 	}
 }
 

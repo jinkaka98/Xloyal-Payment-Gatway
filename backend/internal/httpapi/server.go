@@ -318,18 +318,41 @@ func (s Server) startManualMerchantLogin(w http.ResponseWriter, r *http.Request,
 		notFound(w, err)
 		return
 	}
-	if err = s.ManualLogin(context.Background(), connection); err != nil {
-		problem(w, http.StatusInternalServerError, "open manual browser login failed")
-		return
-	}
 	connection.Status = domain.ConnectionReconnectRequired
 	connection.LastError = "Manual browser login in progress"
+	connection.LastSyncedAt = nil
 	connection.UpdatedAt = time.Now().UTC()
 	if err = s.Repo.UpsertMerchantConnection(r.Context(), connection); err != nil {
 		problem(w, http.StatusInternalServerError, "mark manual browser login failed")
 		return
 	}
+	go s.finishManualLogin(connection)
 	write(w, http.StatusAccepted, map[string]string{"status": "manual_login_started"})
+}
+
+func (s Server) finishManualLogin(connection domain.MerchantConnection) {
+	ctx := context.Background()
+	merchantID := connection.MerchantID
+	if err := s.ManualLogin(ctx, connection); err != nil {
+		failed, lookupErr := s.Repo.MerchantConnection(ctx, merchantID)
+		if lookupErr != nil {
+			return
+		}
+		failed.Status = domain.ConnectionReconnectRequired
+		failed.LastError = "Manual browser login failed: " + truncateManualLoginError(err.Error())
+		failed.UpdatedAt = time.Now().UTC()
+		_ = s.Repo.UpsertMerchantConnection(ctx, failed)
+		return
+	}
+	queued, err := s.Repo.MerchantConnection(ctx, merchantID)
+	if err != nil {
+		return
+	}
+	queued.Status = domain.ConnectionReconnectRequired
+	queued.LastSyncedAt = nil
+	queued.LastError = "Browser connection queued"
+	queued.UpdatedAt = time.Unix(0, 0).UTC()
+	_ = s.Repo.UpsertMerchantConnection(ctx, queued)
 }
 
 func (s Server) requestMerchantSync(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
@@ -1207,6 +1230,14 @@ func write(w http.ResponseWriter, status int, v any) {
 }
 func problem(w http.ResponseWriter, status int, msg string) {
 	write(w, status, map[string]string{"error": msg})
+}
+
+func truncateManualLoginError(message string) string {
+	message = strings.TrimSpace(message)
+	if len(message) <= 240 {
+		return message
+	}
+	return message[:240]
 }
 
 func newID() string {

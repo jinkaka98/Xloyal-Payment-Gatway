@@ -128,6 +128,49 @@ func TestReconnectRequiredCanQueueAutomaticConnection(t *testing.T) {
 	}
 }
 
+func TestManualLoginAcceptsAndQueuesSyncAfterBackgroundCompletion(t *testing.T) {
+	repo := store.NewMemory()
+	ctx := context.Background()
+	repo.UpsertMerchantConnection(ctx, domain.MerchantConnection{MerchantID: "merchant_manual", Status: domain.ConnectionReconnectRequired, LastSyncedAt: func() *time.Time { value := time.Now().UTC(); return &value }(), UpdatedAt: time.Now().UTC()})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	manualLogin := func(context.Context, domain.MerchantConnection) error {
+		close(started)
+		<-release
+		return nil
+	}
+	h := Server{Repo: repo, ManualLogin: manualLogin, AdminTokens: map[string]string{"admin": "operator"}}.Handler()
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/admin/merchant-ids/merchant_manual/connection/manual-login", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(response, req)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("manual login code=%d body=%s", response.Code, response.Body.String())
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("manual login did not start in background")
+	}
+	connection, _ := repo.MerchantConnection(ctx, "merchant_manual")
+	if connection.LastError != "Manual browser login in progress" {
+		t.Fatalf("in-progress connection=%+v", connection)
+	}
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		connection, _ = repo.MerchantConnection(ctx, "merchant_manual")
+		if connection.LastError == "Browser connection queued" {
+			if !connection.UpdatedAt.Equal(time.Unix(0, 0).UTC()) || connection.LastSyncedAt != nil {
+				t.Fatalf("queued connection=%+v", connection)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("background completion did not queue sync: %+v", connection)
+}
+
 func TestCreateTenantGeneratesCredentialsAndPersistsConnectivity(t *testing.T) {
 	repo := store.NewMemory()
 	repo.CreateMerchantID(context.Background(), domain.MerchantID{ID: "interactive-browser", Name: "InterActive QRIS browser", Active: true})

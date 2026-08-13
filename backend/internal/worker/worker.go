@@ -17,7 +17,7 @@ const MaxChecks = 30
 const MaxAge = 30 * time.Minute
 const TestPaymentMatchWindow = 10 * time.Minute
 const TestPaymentPollInterval = 30 * time.Second
-const MerchantSyncTimeout = 150 * time.Second
+const MerchantSyncTimeout = 11 * time.Minute
 
 type MerchantSync func(context.Context, domain.MerchantConnection) ([]domain.PortalTransaction, error)
 
