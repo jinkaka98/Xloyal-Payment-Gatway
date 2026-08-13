@@ -4,7 +4,7 @@ import re
 import subprocess
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -12,6 +12,7 @@ DISPLAY = os.environ.get("DISPLAY", ":99.0")
 PORTAL_LOGIN = "https://merchant.qris.interactive.co.id/v2/m/login/"
 PORTAL_HISTORY = "https://merchant.qris.interactive.co.id/v2/m/kontenr.php?idir=pages/historytrx.php"
 LOCK = threading.Lock()
+WIB = timezone(timedelta(hours=7))
 
 
 def xdotool(*args):
@@ -101,7 +102,7 @@ def scrape_history(window):
     time.sleep(6)
     click(window, 105, 350)
     time.sleep(0.5)
-    now = datetime.now()
+    now = datetime.now(WIB)
     # The left calendar is the current month. Select day 1, then today's day.
     first_x, first_y = 267, 447
     start_weekday = datetime(now.year, now.month, 1).weekday()  # Monday=0
@@ -196,4 +197,5 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 
-ThreadingHTTPServer(("0.0.0.0", 9224), Handler).serve_forever()
+if __name__ == "__main__":
+    ThreadingHTTPServer(("0.0.0.0", 9224), Handler).serve_forever()
