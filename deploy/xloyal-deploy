@@ -3,16 +3,17 @@ set -eu
 exec 9>/run/lock/xloyal-deploy.lock
 flock -n 9 || exit 0
 . /DATA/AppData/xloyal/github.env
-# This repository is public.  Fetching anonymously avoids stale PATs in the
-# server environment turning an otherwise valid update into an auth failure.
-unset GITHUB_TOKEN GIT_ASKPASS SSH_ASKPASS
-export GIT_TERMINAL_PROMPT=0
+if [ -z "${GITHUB_TOKEN:-}" ]; then
+  echo "GITHUB_TOKEN is not configured; leaving webhook signal queued" >&2
+  exit 0
+fi
+export GITHUB_TOKEN GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/usr/local/lib/xloyal-git-askpass
 repo=/DATA/projects/xloyal/current
 compose=/var/lib/casaos/apps/xloyal/docker-compose.yml
 signal=/DATA/AppData/xloyal/signals/deploy-request
 cd "$repo"
 previous=$(git rev-parse HEAD)
-git -c credential.helper= fetch --quiet origin main
+git fetch --quiet origin main
 requested=$(cat "$signal" 2>/dev/null || true)
 target=$(git rev-parse origin/main)
 if [ -n "$requested" ] && [ "$requested" != "$target" ]; then
