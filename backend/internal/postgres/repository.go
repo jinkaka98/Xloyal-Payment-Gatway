@@ -319,15 +319,15 @@ func (r *Repository) AllowQRISRequest(ctx context.Context, templateID, tenantID 
 	return count <= max, retry, err
 }
 func (r *Repository) CreateTestPayment(ctx context.Context, v domain.TestPayment) error {
-	_, err := r.DB.ExecContext(ctx, `INSERT INTO test_payments(id,qris_template_id,merchant_id,tenant_id,amount,dynamic_payload,status,request_source,match_confidence,matched_transaction_id,created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count) VALUES($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6,$7,$8,$9,NULLIF($10,''),$11,$12,$13,$14,$15,$16)`, v.ID, v.QRISTemplateID, v.MerchantID, v.TenantID, v.Amount, v.DynamicPayload, v.Status, v.RequestSource, v.MatchConfidence, v.MatchedTransactionID, v.CreatedAt, v.UpdatedAt, v.ExpiresAt, v.LastCheckedAt, v.NextCheckAt, v.CheckCount)
+	_, err := r.DB.ExecContext(ctx, `INSERT INTO test_payments(id,qris_template_id,merchant_id,tenant_id,amount,dynamic_payload,unique_code,status,request_source,match_confidence,matched_transaction_id,created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count) VALUES($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6,$7,$8,$9,$10,NULLIF($11,''),$12,$13,$14,$15,$16,$17)`, v.ID, v.QRISTemplateID, v.MerchantID, v.TenantID, v.Amount, v.DynamicPayload, v.UniqueCode, v.Status, v.RequestSource, v.MatchConfidence, v.MatchedTransactionID, v.CreatedAt, v.UpdatedAt, v.ExpiresAt, v.LastCheckedAt, v.NextCheckAt, v.CheckCount)
 	return err
 }
 
-const testPaymentColumns = `SELECT id,qris_template_id,COALESCE(merchant_id,''),COALESCE(tenant_id,''),amount,dynamic_payload,status,request_source,match_confidence,COALESCE(matched_transaction_id,''),created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count FROM test_payments`
+const testPaymentColumns = `SELECT id,qris_template_id,COALESCE(merchant_id,''),COALESCE(tenant_id,''),amount,dynamic_payload,unique_code,status,request_source,match_confidence,COALESCE(matched_transaction_id,''),created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count FROM test_payments`
 
 func scanTestPayment(s interface{ Scan(...any) error }) (domain.TestPayment, error) {
 	var v domain.TestPayment
-	err := s.Scan(&v.ID, &v.QRISTemplateID, &v.MerchantID, &v.TenantID, &v.Amount, &v.DynamicPayload, &v.Status, &v.RequestSource, &v.MatchConfidence, &v.MatchedTransactionID, &v.CreatedAt, &v.UpdatedAt, &v.ExpiresAt, &v.LastCheckedAt, &v.NextCheckAt, &v.CheckCount)
+	err := s.Scan(&v.ID, &v.QRISTemplateID, &v.MerchantID, &v.TenantID, &v.Amount, &v.DynamicPayload, &v.UniqueCode, &v.Status, &v.RequestSource, &v.MatchConfidence, &v.MatchedTransactionID, &v.CreatedAt, &v.UpdatedAt, &v.ExpiresAt, &v.LastCheckedAt, &v.NextCheckAt, &v.CheckCount)
 	return v, err
 }
 func (r *Repository) TestPayment(ctx context.Context, id string) (domain.TestPayment, error) {

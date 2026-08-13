@@ -7,6 +7,7 @@ import (
 
 	"xloyal/backend/internal/domain"
 	"xloyal/backend/internal/gateway"
+	"xloyal/backend/internal/qris"
 	"xloyal/backend/internal/store"
 )
 
@@ -108,7 +109,8 @@ func (w Worker) reconcileTransaction(ctx context.Context, transaction *domain.Po
 	if err != nil {
 		return
 	}
-	var matches []domain.Invoice
+	var uniqueMatches []domain.Invoice
+	var timeMatches []domain.Invoice
 	for _, tenant := range tenants {
 		if tenant.MerchantID != transaction.MerchantID {
 			continue
@@ -121,14 +123,18 @@ func (w Worker) reconcileTransaction(ctx context.Context, transaction *domain.Po
 			if invoice.Status != domain.InvoicePending || invoice.Amount != transaction.Amount {
 				continue
 			}
-			delta := invoice.CreatedAt.Sub(transaction.PaidAt)
-			if delta < 0 {
-				delta = -delta
+			if referenceMatches(transaction.Reference, invoiceUniqueCode(invoice)) {
+				uniqueMatches = append(uniqueMatches, invoice)
+				continue
 			}
-			if delta <= 10*time.Minute {
-				matches = append(matches, invoice)
+			if withinMatchWindow(invoice.CreatedAt, transaction.PaidAt, 10*time.Minute) {
+				timeMatches = append(timeMatches, invoice)
 			}
 		}
+	}
+	matches, confidence := uniqueMatches, "reference_unique"
+	if len(matches) == 0 {
+		matches, confidence = timeMatches, "amount_time_unique"
 	}
 	if len(matches) != 1 {
 		transaction.MatchConfidence = "unmatched"
@@ -142,7 +148,31 @@ func (w Worker) reconcileTransaction(ctx context.Context, transaction *domain.Po
 	if err != nil || !updated {
 		return
 	}
-	transaction.TenantID, transaction.InvoiceID, transaction.MatchConfidence = match.TenantID, match.ID, "amount_time_unique"
+	transaction.TenantID, transaction.InvoiceID, transaction.MatchConfidence = match.TenantID, match.ID, confidence
+}
+
+func invoiceUniqueCode(inv domain.Invoice) string {
+	if code, err := qris.BillNumber(inv.QRPayload); err == nil && strings.TrimSpace(code) != "" {
+		return code
+	}
+	return strings.TrimSpace(inv.ProviderReference)
+}
+
+func referenceMatches(reference, code string) bool {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return false
+	}
+	reference = strings.TrimSpace(reference)
+	return reference == code || strings.Contains(reference, code)
+}
+
+func withinMatchWindow(a, b time.Time, window time.Duration) bool {
+	delta := a.Sub(b)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= window
 }
 func (w Worker) checkTestPayments(ctx context.Context, now time.Time) error {
 	if _, err := w.Repo.ExpirePendingTestPayments(ctx, now); err != nil {
@@ -184,7 +214,8 @@ func (w Worker) checkTestPayments(ctx context.Context, now time.Time) error {
 		payment.CheckCount++
 		payment.MatchConfidence = "no_matching_merchant_transaction"
 
-		var matches []domain.PortalTransaction
+		var uniqueMatches []domain.PortalTransaction
+		var timeMatches []domain.PortalTransaction
 		if payment.MerchantID != "" {
 			transactions, ok := ledgers[payment.MerchantID]
 			if !ok {
@@ -199,16 +230,23 @@ func (w Worker) checkTestPayments(ctx context.Context, now time.Time) error {
 				if transaction.Status != "paid" || transaction.Amount != payment.Amount || transaction.InvoiceID != "" {
 					continue
 				}
-				delta := transaction.PaidAt.Sub(payment.CreatedAt)
-				if delta < 0 {
-					delta = -delta
+				if referenceMatches(transaction.Reference, payment.UniqueCode) {
+					uniqueMatches = append(uniqueMatches, transaction)
+					continue
 				}
-				if delta <= TestPaymentMatchWindow && !transaction.PaidAt.After(payment.ExpiresAt) {
-					matches = append(matches, transaction)
+				if withinMatchWindow(transaction.PaidAt, payment.CreatedAt, TestPaymentMatchWindow) && !transaction.PaidAt.After(payment.ExpiresAt) {
+					timeMatches = append(timeMatches, transaction)
 				}
 			}
 		} else {
 			payment.MatchConfidence = "merchant_not_linked"
+		}
+
+		matches := uniqueMatches
+		unique := true
+		if len(matches) == 0 {
+			matches = timeMatches
+			unique = false
 		}
 
 		switch len(matches) {
@@ -216,16 +254,25 @@ func (w Worker) checkTestPayments(ctx context.Context, now time.Time) error {
 			payment.Status = domain.InvoicePaid
 			payment.NextCheckAt = nil
 			payment.MatchConfidence = "amount_time_unique"
+			if unique {
+				payment.MatchConfidence = "reference_unique"
+			}
 			payment.MatchedTransactionID = matches[0].ID
 			transaction := matches[0]
 			if payment.TenantID != "" {
 				transaction.TenantID = payment.TenantID
 			}
 			transaction.MatchConfidence = "qris_test_amount_time_unique"
+			if unique {
+				transaction.MatchConfidence = "qris_test_reference_unique"
+			}
 			_ = w.Repo.CreatePortalTransaction(ctx, transaction)
 		default:
 			if len(matches) > 1 {
 				payment.MatchConfidence = "ambiguous_amount_time"
+				if unique {
+					payment.MatchConfidence = "ambiguous_reference"
+				}
 			}
 			if !payment.ExpiresAt.After(now) {
 				payment.Status = domain.InvoiceExpired

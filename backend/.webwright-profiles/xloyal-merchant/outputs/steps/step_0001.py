@@ -16,8 +16,8 @@ if await email_input.count() and await password_input.count():
     raise RuntimeError("portal login is still displayed; verify browser email and password")
 await page.goto("https://merchant.qris.interactive.co.id/v2/m/kontenr.php?idir=pages/historytrx.php", wait_until="domcontentloaded")
 await page.wait_for_load_state("networkidle", timeout=15000)
-start_date = "2026-08-13"
-end_date = "2026-08-13"
+start_date = "2026-08-14"
+end_date = "2026-08-14"
 start_display = "/".join(reversed(start_date.split("-")))
 end_display = "/".join(reversed(end_date.split("-")))
 if start_date and end_date:

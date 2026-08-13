@@ -29,3 +29,55 @@ func TestConvertRejectsInvalidAndNonStatic(t *testing.T) {
 		t.Fatal("dynamic payload accepted as static template")
 	}
 }
+
+func TestWithBillNumberAndBillNumber(t *testing.T) {
+	dynamic, err := Convert(staticFixture, 50000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := WithBillNumber(dynamic, "INV12345")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, "000201010212") || !validCRC(got) {
+		t.Fatalf("invalid payload with bill number: %s", got)
+	}
+	bn, err := BillNumber(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bn != "INV12345" {
+		t.Fatalf("bill number = %q, want INV12345", bn)
+	}
+
+	replaced, err := WithBillNumber(got, "INV99999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bn, err = BillNumber(replaced); err != nil || bn != "INV99999" {
+		t.Fatalf("replaced bill number = %q (err=%v), want INV99999", bn, err)
+	}
+	if !validCRC(replaced) {
+		t.Fatalf("invalid CRC after replacing bill number: %s", replaced)
+	}
+}
+
+func TestBillNumberMissing(t *testing.T) {
+	dynamic, err := Convert(staticFixture, 50000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bn, err := BillNumber(dynamic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bn != "" {
+		t.Fatalf("bill number = %q, want empty", bn)
+	}
+}
+
+func TestWithBillNumberRejectsEmpty(t *testing.T) {
+	if _, err := WithBillNumber(staticFixture, ""); err == nil {
+		t.Fatal("empty bill number accepted")
+	}
+}

@@ -1214,6 +1214,12 @@ func (s Server) createTestPayment(w http.ResponseWriter, r *http.Request, _ doma
 		problem(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	uniqueCode := newUniqueCode()
+	payload, err = qrisservice.WithBillNumber(payload, uniqueCode)
+	if err != nil {
+		problem(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	now := time.Now().UTC()
 	tenantID, merchantID := template.TenantID, ""
 	if tenantID != "" {
@@ -1246,7 +1252,7 @@ func (s Server) createTestPayment(w http.ResponseWriter, r *http.Request, _ doma
 	matchConfidence := "waiting_first_check"
 	payment := domain.TestPayment{
 		ID: newID(), QRISTemplateID: template.ID, MerchantID: merchantID, TenantID: tenantID,
-		Amount: in.Amount, DynamicPayload: payload, Status: domain.InvoicePending,
+		Amount: in.Amount, DynamicPayload: payload, UniqueCode: uniqueCode, Status: domain.InvoicePending,
 		RequestSource: "admin_qris_test", MatchConfidence: matchConfidence,
 		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(30 * time.Minute),
 	}
@@ -1349,6 +1355,15 @@ func newID() string {
 		panic(err)
 	}
 	return hex.EncodeToString(bytes[:])
+}
+
+func newUniqueCode() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	n := uint64(b[0])<<24 | uint64(b[1])<<16 | uint64(b[2])<<8 | uint64(b[3])
+	return strconv.FormatUint(10_000_000+n%90_000_000, 10)
 }
 
 func newAPIKey() string {

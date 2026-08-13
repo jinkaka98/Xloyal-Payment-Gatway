@@ -443,3 +443,33 @@ func TestAdminCanEditQRISTemplateAccessAndRateLimit(t *testing.T) {
 		t.Fatalf("stored=%+v", stored)
 	}
 }
+
+func TestCreateTestPaymentInjectsUniqueCode(t *testing.T) {
+	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
+	repo := store.NewMemory()
+	ctx := context.Background()
+	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-test", Name: "Test merchant", Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-test", StaticPayload: staticPayload, Active: true})
+	h := Server{Repo: repo, AdminTokens: map[string]string{"admin": "operator"}}.Handler()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/admin/qris-test-payments", strings.NewReader(`{"qris_template_id":"template-test","amount":50000}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	var payment domain.TestPayment
+	if err := json.Unmarshal(w.Body.Bytes(), &payment); err != nil {
+		t.Fatal(err)
+	}
+	if len(payment.UniqueCode) != 8 {
+		t.Fatalf("unique_code=%q", payment.UniqueCode)
+	}
+	if !strings.Contains(payment.DynamicPayload, payment.UniqueCode) {
+		t.Fatalf("dynamic payload does not embed unique code: %s", payment.DynamicPayload)
+	}
+	stored, _ := repo.TestPayment(ctx, payment.ID)
+	if stored.UniqueCode != payment.UniqueCode || !strings.Contains(stored.DynamicPayload, payment.UniqueCode) {
+		t.Fatalf("stored=%+v", stored)
+	}
+}

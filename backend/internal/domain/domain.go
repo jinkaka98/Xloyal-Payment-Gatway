@@ -150,6 +150,7 @@ type TestPayment struct {
 	TenantID             string        `json:"tenant_id,omitempty"`
 	Amount               int64         `json:"amount"`
 	DynamicPayload       string        `json:"dynamic_payload"`
+	UniqueCode           string        `json:"unique_code"`
 	Status               InvoiceStatus `json:"status"`
 	RequestSource        string        `json:"request_source"`
 	MatchConfidence      string        `json:"match_confidence"`

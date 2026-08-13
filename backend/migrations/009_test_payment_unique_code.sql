@@ -1,0 +1,1 @@
+ALTER TABLE test_payments ADD COLUMN IF NOT EXISTS unique_code TEXT NOT NULL DEFAULT '';

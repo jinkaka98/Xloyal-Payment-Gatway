@@ -223,3 +223,49 @@ func TestReconnectRequiredConnectionIsProcessed(t *testing.T) {
 		t.Fatalf("called=%v connection=%+v", called, connection)
 	}
 }
+
+func TestReconcileInvoiceMatchesByUniqueReference(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemory()
+	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", MerchantID: "merchant-a", Active: true})
+	repo.CreateInvoice(ctx, domain.Invoice{ID: "invoice-a", TenantID: "tenant-a", IdempotencyKey: "idem", Amount: 75000, ProviderReference: "INV-123", Status: domain.InvoicePending, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour)})
+	w := Worker{Repo: repo, Now: func() time.Time { return now }}
+	transaction := domain.PortalTransaction{MerchantID: "merchant-a", Reference: "INV-123", Amount: 75000, Status: "paid", PaidAt: now.Add(-time.Hour)}
+	w.reconcileTransaction(ctx, &transaction, now)
+	if transaction.MatchConfidence != "reference_unique" || transaction.InvoiceID != "invoice-a" || transaction.TenantID != "tenant-a" {
+		t.Fatalf("transaction=%+v", transaction)
+	}
+	invoice, _ := repo.Invoice(ctx, "tenant-a", "invoice-a")
+	if invoice.Status != domain.InvoicePaid {
+		t.Fatalf("invoice=%+v", invoice)
+	}
+}
+
+func TestQRISTestPaymentMatchesByUniqueReference(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemory()
+	now := time.Date(2026, 8, 11, 12, 5, 0, 0, time.UTC)
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-test"})
+	repo.CreateTestPayment(ctx, domain.TestPayment{
+		ID: "test-paid", QRISTemplateID: "template-test", MerchantID: "merchant-test", TenantID: "tenant-test",
+		Amount: 50000, UniqueCode: "12345678", Status: domain.InvoicePending, RequestSource: "admin_qris_test",
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour),
+	})
+	repo.CreatePortalTransaction(ctx, domain.PortalTransaction{
+		ID: "portal-test", MerchantID: "merchant-test", Reference: "trx-12345678-end", Amount: 50000,
+		Status: "paid", PaidAt: now.Add(-time.Hour), Source: "browser", CreatedAt: now,
+	})
+	w := Worker{Repo: repo, Now: func() time.Time { return now }}
+	if err := w.checkTestPayments(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	payment, _ := repo.TestPayment(ctx, "test-paid")
+	if payment.Status != domain.InvoicePaid || payment.MatchConfidence != "reference_unique" || payment.MatchedTransactionID != "portal-test" {
+		t.Fatalf("payment=%+v", payment)
+	}
+	transactions, _ := repo.ListPortalTransactions(ctx, "merchant-test", "tenant-test", 10)
+	if len(transactions) != 1 || transactions[0].MatchConfidence != "qris_test_reference_unique" {
+		t.Fatalf("transactions=%+v", transactions)
+	}
+}
