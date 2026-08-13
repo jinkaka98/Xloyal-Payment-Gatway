@@ -28,6 +28,14 @@ func main() {
 	}
 	cdpURL := env("NEKO_CDP_URL", "http://neko:9222")
 	portalURL := env("WEBWRIGHT_PORTAL_URL", "https://merchant.qris.interactive.co.id")
+	if os.Getenv("WEBWRIGHT_MANUAL_LOGIN") == "true" {
+		// Neko owns the visible browser session. The operator opens the portal
+		// and completes CAPTCHA there; this probe makes the API transition only
+		// when that persistent browser is reachable.
+		activePageTarget(cdpURL)
+		fmt.Print(`{"transactions":[]}` + "\n")
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	allocator, cancelAllocator := chromedp.NewRemoteAllocator(ctx, cdpURL)
@@ -45,12 +53,6 @@ func main() {
 			chromedp.SendKeys(`input[type="email"], input[name*="email" i], input[type="text"]`, input.Credential.Email, chromedp.ByQuery),
 			chromedp.SendKeys(`input[type="password"]`, input.Credential.Password, chromedp.ByQuery),
 		)
-	}
-	if os.Getenv("WEBWRIGHT_MANUAL_LOGIN") == "true" {
-		// CAPTCHA is completed interactively in Neko. Do not click or solve it here.
-		if err := chromedp.Run(browserCtx, chromedp.WaitNotPresent(`input[type="password"]`, chromedp.ByQuery)); err != nil {
-			fail("manual login did not complete in Neko: " + err.Error())
-		}
 	}
 	fmt.Print(`{"transactions":[]}` + "\n")
 }
