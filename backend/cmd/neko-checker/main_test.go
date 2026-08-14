@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -19,6 +20,22 @@ func TestCurrentMonthRangeUsesPortalDayMonthYearFormat(t *testing.T) {
 func TestDecodePortalStateRejectsUnexpectedCDPValue(t *testing.T) {
 	if _, err := decodePortalState(true); err == nil {
 		t.Fatal("expected unexpected CDP value type to be rejected")
+	}
+}
+
+func TestAuthenticatedHistoryPageDoesNotNavigateAgain(t *testing.T) {
+	state := portalState{Authenticated: true, HistoryReady: true}
+	if requiresHistoryNavigation(state) {
+		t.Fatal("ready history page must be reused instead of reloading and waiting again")
+	}
+}
+
+func TestHistoryRefreshWaitsForNewDataTablesDrawAndCompletedRequest(t *testing.T) {
+	expression := historyRefreshCompleteExpression(7)
+	for _, expected := range []string{"iDraw > 7", "readyState===4"} {
+		if !strings.Contains(expression, expected) {
+			t.Fatalf("refresh completion expression %q does not contain %q", expression, expected)
+		}
 	}
 }
 

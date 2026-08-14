@@ -1350,7 +1350,7 @@ func (s Server) createTestPayment(w http.ResponseWriter, r *http.Request, _ doma
 		RequestSource: "admin_qris_test", MatchConfidence: matchConfidence,
 		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(30 * time.Minute),
 	}
-	nextCheck := now.Add(30 * time.Second)
+	nextCheck := now.Add(15 * time.Second)
 	payment.NextCheckAt = &nextCheck
 	if err := s.Repo.CreateTestPayment(r.Context(), payment); err != nil {
 		problem(w, http.StatusInternalServerError, "save test payment failed")

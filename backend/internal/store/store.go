@@ -411,7 +411,7 @@ func (m *Memory) CreateTestPayment(_ context.Context, v domain.TestPayment) erro
 		return ErrNotFound
 	}
 	if v.NextCheckAt == nil && v.Status == domain.InvoicePending {
-		next := v.CreatedAt.Add(30 * time.Second)
+		next := v.CreatedAt.Add(15 * time.Second)
 		v.NextCheckAt = &next
 	}
 	m.payments[v.ID] = v
@@ -464,9 +464,7 @@ func (m *Memory) ExpirePendingTestPayments(_ context.Context, now time.Time) (in
 		}
 		v.Status = domain.InvoiceExpired
 		v.UpdatedAt = now
-		v.LastCheckedAt = &now
 		v.NextCheckAt = nil
-		v.CheckCount++
 		v.MatchConfidence = "expired_no_match"
 		m.payments[id] = v
 		count++

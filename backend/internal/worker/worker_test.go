@@ -2,12 +2,22 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 	"xloyal/backend/internal/domain"
 	"xloyal/backend/internal/gateway"
 	"xloyal/backend/internal/store"
 )
+
+type failingPortalRepository struct {
+	store.Repository
+	err error
+}
+
+func (r failingPortalRepository) CreatePortalTransaction(context.Context, domain.PortalTransaction) error {
+	return r.err
+}
 
 type pendingProvider struct{ checks int }
 
@@ -70,7 +80,7 @@ func TestFailedPollConsumesRetrySlot(t *testing.T) {
 	}
 }
 
-func TestQRISTestPaymentExpiresAndRecordsCheck(t *testing.T) {
+func TestQRISTestPaymentExpiresWithoutFabricatingCheck(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemory()
 	now := time.Date(2026, 8, 11, 12, 30, 0, 0, time.UTC)
@@ -85,7 +95,7 @@ func TestQRISTestPaymentExpiresAndRecordsCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	payment, _ := repo.TestPayment(ctx, "test-expired")
-	if payment.Status != domain.InvoiceExpired || payment.MatchConfidence != "expired_no_match" || payment.CheckCount != 1 || payment.LastCheckedAt == nil {
+	if payment.Status != domain.InvoiceExpired || payment.MatchConfidence != "expired_no_match" || payment.CheckCount != 0 || payment.LastCheckedAt != nil {
 		t.Fatalf("payment=%+v", payment)
 	}
 }
@@ -118,6 +128,31 @@ func TestQRISTestPaymentMatchesUniqueMerchantTransaction(t *testing.T) {
 	}
 }
 
+func TestQRISTestPaymentDoesNotMatchTransactionBeforeRequest(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemory()
+	now := time.Date(2026, 8, 11, 12, 5, 0, 0, time.UTC)
+	createdAt := now.Add(-5 * time.Minute)
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-test"})
+	repo.CreateTestPayment(ctx, domain.TestPayment{
+		ID: "test-pending", QRISTemplateID: "template-test", MerchantID: "merchant-test",
+		Amount: 50000, Status: domain.InvoicePending, RequestSource: "admin_qris_test",
+		CreatedAt: createdAt, UpdatedAt: createdAt, ExpiresAt: createdAt.Add(30 * time.Minute),
+	})
+	repo.CreatePortalTransaction(ctx, domain.PortalTransaction{
+		ID: "portal-before-request", MerchantID: "merchant-test", Reference: "portal-ref", Amount: 50000,
+		Status: "paid", PaidAt: createdAt.Add(-time.Minute), Source: "browser", CreatedAt: now,
+	})
+	w := Worker{Repo: repo, Now: func() time.Time { return now }}
+	if err := w.checkTestPayments(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	payment, _ := repo.TestPayment(ctx, "test-pending")
+	if payment.Status != domain.InvoicePending || payment.MatchedTransactionID != "" || payment.CheckCount != 1 {
+		t.Fatalf("transaction before request was matched: %+v", payment)
+	}
+}
+
 func TestQRISTestSmartCheckWaitsAndSchedulesNextAttempt(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemory()
@@ -140,6 +175,146 @@ func TestQRISTestSmartCheckWaitsAndSchedulesNextAttempt(t *testing.T) {
 	payment, _ = repo.TestPayment(ctx, "smart-1")
 	if payment.CheckCount != 1 || payment.LastCheckedAt == nil || payment.NextCheckAt == nil || !payment.NextCheckAt.Equal(first.Add(TestPaymentPollInterval)) {
 		t.Fatalf("smart schedule not persisted: %+v", payment)
+	}
+}
+
+func TestQRISTestValidationSyncsBrowserBeforeCountingCheck(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemory()
+	startedAt := time.Date(2026, 8, 14, 1, 28, 0, 0, time.UTC)
+	completedAt := startedAt.Add(45 * time.Second)
+	current := startedAt
+	createdAt := startedAt.Add(-30 * time.Second)
+	recentSync := startedAt.Add(-time.Minute)
+
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-test"})
+	repo.UpsertMerchantConnection(ctx, domain.MerchantConnection{
+		MerchantID:   "merchant-test",
+		Status:       domain.ConnectionConnected,
+		LastSyncedAt: &recentSync,
+		UpdatedAt:    recentSync,
+	})
+	repo.CreateTestPayment(ctx, domain.TestPayment{
+		ID:             "test-fresh-sync",
+		QRISTemplateID: "template-test",
+		MerchantID:     "merchant-test",
+		Amount:         1013,
+		Status:         domain.InvoicePending,
+		RequestSource:  "admin_qris_test",
+		CreatedAt:      createdAt,
+		UpdatedAt:      createdAt,
+		ExpiresAt:      createdAt.Add(30 * time.Minute),
+	})
+
+	w := Worker{
+		Repo: repo,
+		Now:  func() time.Time { return current },
+		SyncMerchant: func(ctx context.Context, connection domain.MerchantConnection) ([]domain.PortalTransaction, error) {
+			payment, err := repo.TestPayment(ctx, "test-fresh-sync")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if payment.CheckCount != 0 || payment.LastCheckedAt != nil {
+				t.Fatalf("payment counted before browser history completed: %+v", payment)
+			}
+			current = completedAt
+			return []domain.PortalTransaction{{
+				Reference: "portal-reference",
+				Amount:    1013,
+				Status:    "paid",
+				PaidAt:    createdAt.Add(21 * time.Second),
+			}}, nil
+		},
+	}
+
+	if err := w.validateTestPayments(ctx); err != nil {
+		t.Fatal(err)
+	}
+	payment, _ := repo.TestPayment(ctx, "test-fresh-sync")
+	if payment.Status != domain.InvoicePaid || payment.CheckCount != 1 || payment.MatchedTransactionID == "" {
+		t.Fatalf("payment was not matched from the completed browser refresh: %+v", payment)
+	}
+	if payment.LastCheckedAt == nil || !payment.LastCheckedAt.Equal(completedAt) {
+		t.Fatalf("completed check timestamp=%v want=%v", payment.LastCheckedAt, completedAt)
+	}
+}
+
+func TestQRISTestValidationDoesNotCountFailedBrowserSync(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemory()
+	now := time.Date(2026, 8, 14, 1, 28, 0, 0, time.UTC)
+	createdAt := now.Add(-30 * time.Second)
+
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-test"})
+	repo.UpsertMerchantConnection(ctx, domain.MerchantConnection{
+		MerchantID: "merchant-test",
+		Status:     domain.ConnectionConnected,
+		UpdatedAt:  now,
+	})
+	repo.CreateTestPayment(ctx, domain.TestPayment{
+		ID:             "test-failed-sync",
+		QRISTemplateID: "template-test",
+		MerchantID:     "merchant-test",
+		Amount:         1013,
+		Status:         domain.InvoicePending,
+		RequestSource:  "admin_qris_test",
+		CreatedAt:      createdAt,
+		UpdatedAt:      createdAt,
+		ExpiresAt:      createdAt.Add(30 * time.Minute),
+	})
+	w := Worker{
+		Repo: repo,
+		Now:  func() time.Time { return now },
+		SyncMerchant: func(context.Context, domain.MerchantConnection) ([]domain.PortalTransaction, error) {
+			return nil, errors.New("portal history request failed")
+		},
+	}
+
+	if err := w.validateTestPayments(ctx); err != nil {
+		t.Fatal(err)
+	}
+	payment, _ := repo.TestPayment(ctx, "test-failed-sync")
+	if payment.Status != domain.InvoicePending || payment.CheckCount != 0 || payment.LastCheckedAt != nil {
+		t.Fatalf("failed browser request was counted as a check: %+v", payment)
+	}
+	connection, _ := repo.MerchantConnection(ctx, "merchant-test")
+	if connection.Status != domain.ConnectionReconnectRequired || connection.LastError == "" {
+		t.Fatalf("browser failure diagnostic was not preserved: %+v", connection)
+	}
+}
+
+func TestQRISTestValidationDoesNotCountFailedLedgerPersistence(t *testing.T) {
+	ctx := context.Background()
+	memory := store.NewMemory()
+	repo := failingPortalRepository{Repository: memory, err: errors.New("database write failed")}
+	now := time.Date(2026, 8, 14, 1, 28, 0, 0, time.UTC)
+	createdAt := now.Add(-30 * time.Second)
+
+	memory.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-test"})
+	memory.UpsertMerchantConnection(ctx, domain.MerchantConnection{MerchantID: "merchant-test", Status: domain.ConnectionConnected, UpdatedAt: now})
+	memory.CreateTestPayment(ctx, domain.TestPayment{
+		ID: "test-ledger-failure", QRISTemplateID: "template-test", MerchantID: "merchant-test",
+		Amount: 1013, Status: domain.InvoicePending, RequestSource: "admin_qris_test",
+		CreatedAt: createdAt, UpdatedAt: createdAt, ExpiresAt: createdAt.Add(30 * time.Minute),
+	})
+	w := Worker{
+		Repo: repo,
+		Now:  func() time.Time { return now },
+		SyncMerchant: func(context.Context, domain.MerchantConnection) ([]domain.PortalTransaction, error) {
+			return []domain.PortalTransaction{{Reference: "portal-ref", Amount: 1013, Status: "paid", PaidAt: now}}, nil
+		},
+	}
+
+	if err := w.validateTestPayments(ctx); err != nil {
+		t.Fatal(err)
+	}
+	payment, _ := memory.TestPayment(ctx, "test-ledger-failure")
+	if payment.Status != domain.InvoicePending || payment.CheckCount != 0 || payment.LastCheckedAt != nil {
+		t.Fatalf("failed ledger write was counted as a check: %+v", payment)
+	}
+	connection, _ := memory.MerchantConnection(ctx, "merchant-test")
+	if connection.Status != domain.ConnectionReconnectRequired || connection.LastError == "" {
+		t.Fatalf("ledger failure was marked as a successful sync: %+v", connection)
 	}
 }
 

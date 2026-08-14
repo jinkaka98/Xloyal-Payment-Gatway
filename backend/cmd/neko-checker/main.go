@@ -39,6 +39,12 @@ type transaction struct {
 type portalState struct {
 	Login         bool `json:"login"`
 	Authenticated bool `json:"authenticated"`
+	HistoryReady  bool `json:"history_ready"`
+}
+
+type historyRefreshState struct {
+	Status     string `json:"status"`
+	BeforeDraw int    `json:"before_draw"`
 }
 
 type cdpClient struct {
@@ -124,27 +130,40 @@ func extractTransactions(client *cdpClient) ([]transaction, error) {
 	start, end := currentMonthRange(now)
 	filter := fmt.Sprintf(`(() => {
 		const input=document.querySelector('#range-transactions'), limit=document.querySelector('#limit-transactions'), submit=document.querySelector('#getResults');
-		if (!input || !limit || !submit || !document.querySelector('#transaction-summary')) return 'missing_history_controls';
+		const table=window.jQuery?.fn?.dataTable?.isDataTable('#transaction-summary') ? window.jQuery('#transaction-summary').DataTable() : null;
+		const settings=table?.settings?.()[0];
+		if (!input || !limit || !submit || !settings) return JSON.stringify({status:'missing_history_controls',before_draw:-1});
+		const beforeDraw=settings.iDraw;
 		const picker=window.jQuery?.(input).data('daterangepicker');
 		if (picker) { picker.setStartDate(%s); picker.setEndDate(%s); }
 		input.value=%s+' - '+%s; input.dispatchEvent(new Event('change',{bubbles:true}));
-		limit.value='300'; limit.dispatchEvent(new Event('change',{bubbles:true})); submit.click(); return 'submitted';
+		limit.value='300'; limit.dispatchEvent(new Event('change',{bubbles:true})); submit.click(); return JSON.stringify({status:'submitted',before_draw:beforeDraw});
 	})()`, jsString(start), jsString(end), jsString(start), jsString(end))
 	fmt.Fprintln(os.Stderr, "checker: applying current-month history filter")
 	filterResult, err := client.Evaluate(filter)
 	if err != nil {
 		return nil, err
 	}
-	if filterResult != "submitted" {
+	filterRaw, ok := filterResult.(string)
+	if !ok {
+		return nil, fmt.Errorf("history filter returned %T", filterResult)
+	}
+	refreshState, err := decodeHistoryRefreshState(filterRaw)
+	if err != nil || refreshState.Status != "submitted" {
 		return nil, fmt.Errorf("authenticated portal history controls were not found")
 	}
 	deadline := time.Now().Add(30 * time.Second)
+	refreshComplete := false
 	for time.Now().Before(deadline) {
-		value, err := client.Evaluate(`(() => document.querySelector('#transaction-summary') && !document.querySelector('#transaction-summary_processing')?.offsetParent)()`)
+		value, err := client.Evaluate(historyRefreshCompleteExpression(refreshState.BeforeDraw))
 		if err == nil && value == true {
+			refreshComplete = true
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
+	}
+	if !refreshComplete {
+		return nil, fmt.Errorf("portal history request did not complete before timeout")
 	}
 	expression := `(() => JSON.stringify([...document.querySelectorAll('#transaction-summary tbody tr')].map(row=>{
 		const c=[...row.cells].map(cell=>(cell.textContent||'').trim());
@@ -165,6 +184,22 @@ func extractTransactions(client *cdpClient) ([]transaction, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func historyRefreshCompleteExpression(beforeDraw int) string {
+	return fmt.Sprintf(`(() => { const table=window.jQuery?.fn?.dataTable?.isDataTable('#transaction-summary') ? window.jQuery('#transaction-summary').DataTable() : null; const settings=table?.settings?.()[0]; const processing=document.querySelector('#transaction-summary_processing'); const ready=!processing || !processing.offsetParent; return Boolean(settings && settings.iDraw > %d && ready && (!settings.jqXHR || settings.jqXHR.readyState===4)); })()`, beforeDraw)
+}
+
+func decodeHistoryRefreshState(value any) (historyRefreshState, error) {
+	raw, ok := value.(string)
+	if !ok {
+		return historyRefreshState{}, fmt.Errorf("history refresh value has type %T", value)
+	}
+	var state historyRefreshState
+	if err := json.Unmarshal([]byte(raw), &state); err != nil {
+		return historyRefreshState{}, err
+	}
+	return state, nil
 }
 
 func currentMonthRange(now time.Time) (string, string) {
@@ -396,13 +431,16 @@ func waitForPortalLogin(client *cdpClient, portalURL string) error {
 	fmt.Fprintln(os.Stderr, "checker: validating authenticated history page")
 	deadline := time.Now().Add(10 * time.Minute)
 	for time.Now().Before(deadline) {
-		value, err := client.Evaluate(`(() => { const login=Boolean(document.querySelector('input[type=password]')); const dashboard=location.hostname==='merchant.qris.interactive.co.id' && location.pathname.includes('/v2/m/kontenr.php'); const authenticated=dashboard || Boolean(document.querySelector('a[href*="historytrx.php"], #transaction-summary, #range-transactions')); return JSON.stringify({login,authenticated}); })()`)
+		value, err := client.Evaluate(`(() => { const login=Boolean(document.querySelector('input[type=password]')); const dashboard=location.hostname==='merchant.qris.interactive.co.id' && location.pathname.includes('/v2/m/kontenr.php'); const historyReady=Boolean(document.querySelector('#transaction-summary') && document.querySelector('#range-transactions')); const authenticated=dashboard || Boolean(document.querySelector('a[href*="historytrx.php"], #transaction-summary, #range-transactions')); return JSON.stringify({login,authenticated,history_ready:historyReady}); })()`)
 		if err != nil {
 			return fmt.Errorf("portal CDP validation failed: %w", err)
 		}
 		if err == nil {
 			state, stateErr := decodePortalState(value)
 			if stateErr == nil && state.Authenticated && !state.Login {
+				if !requiresHistoryNavigation(state) {
+					return nil
+				}
 				historyURL := strings.TrimRight(portalURL, "/") + "/v2/m/kontenr.php?idir=pages/historytrx.php"
 				if err = client.Navigate(historyURL); err == nil {
 					for waitUntil := time.Now().Add(30 * time.Second); time.Now().Before(waitUntil); time.Sleep(500 * time.Millisecond) {
@@ -417,6 +455,10 @@ func waitForPortalLogin(client *cdpClient, portalURL string) error {
 		time.Sleep(2 * time.Second)
 	}
 	return fmt.Errorf("manual login did not complete in Neko before timeout")
+}
+
+func requiresHistoryNavigation(state portalState) bool {
+	return state.Authenticated && !state.Login && !state.HistoryReady
 }
 
 func decodePortalState(value any) (portalState, error) {

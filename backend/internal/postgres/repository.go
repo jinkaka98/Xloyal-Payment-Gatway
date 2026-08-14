@@ -359,7 +359,7 @@ func (r *Repository) PendingTestPayments(ctx context.Context, due time.Time, lim
 	return out, rows.Err()
 }
 func (r *Repository) ExpirePendingTestPayments(ctx context.Context, now time.Time) (int64, error) {
-	res, err := r.DB.ExecContext(ctx, `UPDATE test_payments SET status='expired',match_confidence='expired_no_match',updated_at=$1,last_checked_at=$1,check_count=check_count+1 WHERE status='pending' AND expires_at <= $1`, now)
+	res, err := r.DB.ExecContext(ctx, `UPDATE test_payments SET status='expired',match_confidence='expired_no_match',updated_at=$1,next_check_at=NULL WHERE status='pending' AND expires_at <= $1`, now)
 	if err != nil {
 		return 0, err
 	}

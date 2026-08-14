@@ -18,6 +18,7 @@ const MaxChecks = 30
 const MaxAge = 30 * time.Minute
 const TestPaymentMatchWindow = 10 * time.Minute
 const TestPaymentPollInterval = 30 * time.Second
+const TestPaymentQueuePollInterval = 5 * time.Second
 const MerchantSyncTimeout = 11 * time.Minute
 
 type MerchantSync func(context.Context, domain.MerchantConnection) ([]domain.PortalTransaction, error)
@@ -33,10 +34,10 @@ func (w Worker) RunOnce(ctx context.Context) error {
 	if err := w.checkInvoices(ctx); err != nil {
 		return err
 	}
-	if err := w.syncMerchants(ctx, w.now()); err != nil {
+	if err := w.validateTestPayments(ctx); err != nil {
 		return err
 	}
-	return w.checkTestPayments(ctx, w.now())
+	return w.syncMerchants(ctx, w.now())
 }
 
 func (w Worker) checkInvoices(ctx context.Context) error {
@@ -66,6 +67,13 @@ func (w Worker) syncMerchants(ctx context.Context, now time.Time) error {
 	if err != nil {
 		return err
 	}
+	return w.syncConnections(ctx, now, connections)
+}
+
+func (w Worker) syncConnections(ctx context.Context, now time.Time, connections []domain.MerchantConnection) error {
+	if w.SyncMerchant == nil {
+		return nil
+	}
 	for _, connection := range connections {
 		connection.Status = domain.ConnectionReconnectRequired
 		connection.LastError = "Manual browser login in progress"
@@ -83,13 +91,24 @@ func (w Worker) syncMerchants(ctx context.Context, now time.Time) error {
 			_ = w.Repo.UpsertMerchantConnection(ctx, connection)
 			continue
 		}
+		persistenceFailed := false
 		for _, transaction := range transactions {
 			transaction.MerchantID = connection.MerchantID
 			transaction.ID = transactionID(transaction, now)
 			transaction.Source = "browser"
 			transaction.CreatedAt = now
 			w.reconcileTransaction(ctx, &transaction, now)
-			_ = w.Repo.CreatePortalTransaction(ctx, transaction)
+			if err := w.Repo.CreatePortalTransaction(ctx, transaction); err != nil {
+				connection.Status = domain.ConnectionReconnectRequired
+				connection.LastError = "browser sync persistence failed: " + truncateError(err.Error())
+				connection.UpdatedAt = now
+				_ = w.Repo.UpsertMerchantConnection(ctx, connection)
+				persistenceFailed = true
+				break
+			}
+		}
+		if persistenceFailed {
+			continue
 		}
 		connection.LastSyncedAt = &now
 		if connection.HistoryBackfilledAt == nil {
@@ -98,7 +117,9 @@ func (w Worker) syncMerchants(ctx context.Context, now time.Time) error {
 		connection.LastError = ""
 		connection.Status = domain.ConnectionConnected
 		connection.UpdatedAt = now
-		_ = w.Repo.UpsertMerchantConnection(ctx, connection)
+		if err := w.Repo.UpsertMerchantConnection(ctx, connection); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -181,39 +202,25 @@ func withinMatchWindow(a, b time.Time, window time.Duration) bool {
 	return delta <= window
 }
 func (w Worker) checkTestPayments(ctx context.Context, now time.Time) error {
-	if _, err := w.Repo.ExpirePendingTestPayments(ctx, now); err != nil {
+	if err := w.checkTestPaymentsForMerchants(ctx, now, nil); err != nil {
 		return err
 	}
+	_, err := w.Repo.ExpirePendingTestPayments(ctx, now)
+	return err
+}
+
+func (w Worker) checkTestPaymentsForMerchants(ctx context.Context, now time.Time, syncedMerchants map[string]struct{}) error {
 	items, err := w.Repo.PendingTestPayments(ctx, now, 100)
 	if err != nil {
 		return err
 	}
-	// One browser sync is enough for all due payments belonging to the same
-	// merchant. Queue it once, then match every payment against that ledger.
-	merchantIDs := make(map[string]struct{})
-	for _, payment := range items {
-		if payment.MerchantID != "" {
-			merchantIDs[payment.MerchantID] = struct{}{}
-		}
-	}
-	for merchantID := range merchantIDs {
-		connection, connErr := w.Repo.MerchantConnection(ctx, merchantID)
-		if connErr != nil {
-			continue
-		}
-		// A failed session must keep its diagnostic and wait for a reconnect.
-		// Re-queuing it on every test tick would hide the real browser error.
-		if connection.Status != domain.ConnectionConnected {
-			continue
-		}
-		connection.UpdatedAt = time.Unix(0, 0).UTC()
-		connection.LastError = "QRIS test validation batch queued"
-		if err := w.Repo.UpsertMerchantConnection(ctx, connection); err != nil {
-			return err
-		}
-	}
 	ledgers := make(map[string][]domain.PortalTransaction)
 	for _, payment := range items {
+		if syncedMerchants != nil {
+			if _, ok := syncedMerchants[payment.MerchantID]; !ok {
+				continue
+			}
+		}
 		checkedAt := now
 		payment.LastCheckedAt = &checkedAt
 		payment.UpdatedAt = now
@@ -240,7 +247,7 @@ func (w Worker) checkTestPayments(ctx context.Context, now time.Time) error {
 					uniqueMatches = append(uniqueMatches, transaction)
 					continue
 				}
-				if withinMatchWindow(transaction.PaidAt, payment.CreatedAt, TestPaymentMatchWindow) && !transaction.PaidAt.After(payment.ExpiresAt) {
+				if !transaction.PaidAt.Before(payment.CreatedAt) && !transaction.PaidAt.After(payment.ExpiresAt) && withinMatchWindow(transaction.PaidAt, payment.CreatedAt, TestPaymentMatchWindow) {
 					timeMatches = append(timeMatches, transaction)
 				}
 			}
@@ -298,27 +305,96 @@ func (w Worker) checkTestPayments(ctx context.Context, now time.Time) error {
 	}
 	return nil
 }
+
+func (w Worker) validateTestPayments(ctx context.Context) error {
+	startedAt := w.now()
+	items, err := w.Repo.PendingTestPayments(ctx, startedAt, 100)
+	if err != nil {
+		return err
+	}
+	expireRemaining := func(now time.Time) error {
+		_, expireErr := w.Repo.ExpirePendingTestPayments(ctx, now)
+		return expireErr
+	}
+	if len(items) == 0 {
+		return expireRemaining(startedAt)
+	}
+	queuedMerchants := make(map[string]struct{})
+	queuedConnections := make([]domain.MerchantConnection, 0)
+	for _, payment := range items {
+		if payment.MerchantID == "" {
+			continue
+		}
+		if _, queued := queuedMerchants[payment.MerchantID]; queued {
+			continue
+		}
+		connection, connErr := w.Repo.MerchantConnection(ctx, payment.MerchantID)
+		if connErr != nil || connection.Status != domain.ConnectionConnected {
+			continue
+		}
+		connection.UpdatedAt = time.Unix(0, 0).UTC()
+		connection.LastError = "QRIS test validation batch queued"
+		if err := w.Repo.UpsertMerchantConnection(ctx, connection); err != nil {
+			return err
+		}
+		queuedMerchants[payment.MerchantID] = struct{}{}
+		queuedConnections = append(queuedConnections, connection)
+	}
+	if len(queuedMerchants) == 0 {
+		return expireRemaining(startedAt)
+	}
+	if err := w.syncConnections(ctx, startedAt, queuedConnections); err != nil {
+		return err
+	}
+	syncedMerchants := make(map[string]struct{})
+	for merchantID := range queuedMerchants {
+		connection, connErr := w.Repo.MerchantConnection(ctx, merchantID)
+		if connErr != nil || connection.Status != domain.ConnectionConnected || connection.LastError != "" || connection.LastSyncedAt == nil || connection.LastSyncedAt.Before(startedAt) {
+			continue
+		}
+		syncedMerchants[merchantID] = struct{}{}
+	}
+	completedAt := w.now()
+	if len(syncedMerchants) != 0 {
+		if err := w.checkTestPaymentsForMerchants(ctx, completedAt, syncedMerchants); err != nil {
+			return err
+		}
+	}
+	return expireRemaining(completedAt)
+}
 func transactionID(transaction domain.PortalTransaction, now time.Time) string {
 	return transaction.MerchantID + "-" + transaction.Reference + "-" + now.Format("20060102150405")
 }
 func (w Worker) Run(ctx context.Context) error {
 	invoiceTicker := time.NewTicker(PollInterval)
-	testPaymentTicker := time.NewTicker(TestPaymentPollInterval)
+	testPaymentTicker := time.NewTicker(TestPaymentQueuePollInterval)
 	merchantTicker := time.NewTicker(MerchantQueuePollInterval)
 	defer invoiceTicker.Stop()
 	defer testPaymentTicker.Stop()
 	defer merchantTicker.Stop()
-	merchantDone := make(chan error, 1)
-	merchantSyncing := false
-	startMerchantSync := func() {
-		if merchantSyncing {
+	type browserResult struct {
+		err error
+	}
+	browserDone := make(chan browserResult, 1)
+	browserBusy := false
+	validationPending := false
+	startBrowserOperation := func(validation bool) {
+		if browserBusy {
+			if validation {
+				validationPending = true
+			}
 			return
 		}
-		merchantSyncing = true
-		now := w.now()
-		go func() { merchantDone <- w.syncMerchants(ctx, now) }()
+		browserBusy = true
+		go func() {
+			if validation {
+				browserDone <- browserResult{err: w.validateTestPayments(ctx)}
+				return
+			}
+			browserDone <- browserResult{err: w.syncMerchants(ctx, w.now())}
+		}()
 	}
-	startMerchantSync()
+	startBrowserOperation(false)
 	for {
 		select {
 		case <-ctx.Done():
@@ -328,15 +404,17 @@ func (w Worker) Run(ctx context.Context) error {
 				return err
 			}
 		case <-testPaymentTicker.C:
-			if err := w.checkTestPayments(ctx, w.now()); err != nil {
-				return err
-			}
+			startBrowserOperation(true)
 		case <-merchantTicker.C:
-			startMerchantSync()
-		case err := <-merchantDone:
-			merchantSyncing = false
-			if err != nil {
-				return err
+			startBrowserOperation(false)
+		case result := <-browserDone:
+			browserBusy = false
+			if result.err != nil {
+				return result.err
+			}
+			if validationPending {
+				validationPending = false
+				startBrowserOperation(true)
 			}
 		}
 	}
