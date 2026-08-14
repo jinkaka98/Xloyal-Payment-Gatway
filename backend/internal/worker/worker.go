@@ -110,13 +110,14 @@ func (w Worker) syncConnections(ctx context.Context, now time.Time, connections 
 		if persistenceFailed {
 			continue
 		}
-		connection.LastSyncedAt = &now
+		completedAt := w.now()
+		connection.LastSyncedAt = &completedAt
 		if connection.HistoryBackfilledAt == nil {
-			connection.HistoryBackfilledAt = &now
+			connection.HistoryBackfilledAt = &completedAt
 		}
 		connection.LastError = ""
 		connection.Status = domain.ConnectionConnected
-		connection.UpdatedAt = now
+		connection.UpdatedAt = completedAt
 		if err := w.Repo.UpsertMerchantConnection(ctx, connection); err != nil {
 			return err
 		}
@@ -394,7 +395,7 @@ func (w Worker) validateTestPayments(ctx context.Context) error {
 	syncedMerchants := make(map[string]struct{})
 	for merchantID := range queuedMerchants {
 		connection, connErr := w.Repo.MerchantConnection(ctx, merchantID)
-		if connErr != nil || connection.Status != domain.ConnectionConnected || connection.LastError != "" || connection.LastSyncedAt == nil || connection.LastSyncedAt.Before(startedAt) {
+		if connErr != nil || connection.Status != domain.ConnectionConnected || connection.LastError != "" || connection.LastSyncedAt == nil || connection.LastSyncedAt.Add(time.Millisecond).Before(startedAt) {
 			continue
 		}
 		syncedMerchants[merchantID] = struct{}{}

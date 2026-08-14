@@ -46,6 +46,36 @@ type failingPortalRepository struct {
 	err error
 }
 
+type microsecondConnectionRepository struct{ store.Repository }
+
+func (r microsecondConnectionRepository) UpsertMerchantConnection(ctx context.Context, connection domain.MerchantConnection) error {
+	connection.UpdatedAt = connection.UpdatedAt.Truncate(time.Microsecond)
+	if connection.LastSyncedAt != nil {
+		truncated := connection.LastSyncedAt.Truncate(time.Microsecond)
+		connection.LastSyncedAt = &truncated
+	}
+	return r.Repository.UpsertMerchantConnection(ctx, connection)
+}
+
+func TestQRISTestValidationAcceptsPostgresTimestampPrecision(t *testing.T) {
+	ctx := context.Background()
+	memory := store.NewMemory()
+	repo := microsecondConnectionRepository{Repository: memory}
+	now := time.Unix(1_786_677_600, 123_456_789).UTC()
+	createdAt := now.Add(-time.Minute)
+	memory.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-test"})
+	memory.UpsertMerchantConnection(ctx, domain.MerchantConnection{MerchantID: "merchant-test", Status: domain.ConnectionConnected, UpdatedAt: now.Add(-time.Minute)})
+	memory.CreateTestPayment(ctx, domain.TestPayment{ID: "precision-test", QRISTemplateID: "template-test", MerchantID: "merchant-test", Amount: 1013, Status: domain.InvoicePending, CreatedAt: createdAt, UpdatedAt: createdAt, ExpiresAt: now.Add(time.Minute)})
+	w := Worker{Repo: repo, Now: func() time.Time { return now }, SyncMerchant: func(context.Context, domain.MerchantConnection) ([]domain.PortalTransaction, error) { return nil, nil }}
+	if err := w.validateTestPayments(ctx); err != nil {
+		t.Fatal(err)
+	}
+	payment, _ := memory.TestPayment(ctx, "precision-test")
+	if payment.CheckCount != 1 || payment.LastCheckedAt == nil {
+		t.Fatalf("successful sync was rejected after timestamp truncation: %+v", payment)
+	}
+}
+
 func (r failingPortalRepository) CreatePortalTransaction(context.Context, domain.PortalTransaction) error {
 	return r.err
 }
