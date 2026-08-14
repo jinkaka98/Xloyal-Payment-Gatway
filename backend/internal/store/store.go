@@ -21,6 +21,7 @@ type Repository interface {
 	Tenant(context.Context, string) (domain.Tenant, error)
 	CreateTenant(context.Context, domain.Tenant) error
 	UpdateTenant(context.Context, domain.Tenant) error
+	RotateTenantAPIKey(context.Context, string, string, string, string, domain.AuditEvent) error
 	ListTenants(context.Context) ([]domain.Tenant, error)
 	AssignTenantMerchant(context.Context, string, string) error
 	CreateMerchantID(context.Context, domain.MerchantID) error
@@ -214,6 +215,7 @@ func (m *Memory) TenantByAPIKey(_ context.Context, hash string) (domain.Tenant, 
 	defer m.mu.Unlock()
 	for _, v := range m.tenants {
 		if v.APIKeyHash == hash && v.Active {
+			v.APIKeyRecoverable = v.APIKeyCiphertext != ""
 			return v, nil
 		}
 	}
@@ -226,6 +228,7 @@ func (m *Memory) Tenant(_ context.Context, id string) (domain.Tenant, error) {
 	if !ok {
 		return domain.Tenant{}, ErrNotFound
 	}
+	v.APIKeyRecoverable = v.APIKeyCiphertext != ""
 	return v, nil
 }
 func (m *Memory) CreateTenant(_ context.Context, v domain.Tenant) error {
@@ -237,10 +240,31 @@ func (m *Memory) CreateTenant(_ context.Context, v domain.Tenant) error {
 func (m *Memory) UpdateTenant(_ context.Context, v domain.Tenant) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.tenants[v.ID]; !ok {
+	current, ok := m.tenants[v.ID]
+	if !ok {
 		return ErrNotFound
 	}
+	v.APIKeyHash = current.APIKeyHash
+	v.APIKeyCiphertext = current.APIKeyCiphertext
+	v.APIKeyRecoverable = current.APIKeyCiphertext != ""
 	m.tenants[v.ID] = v
+	return nil
+}
+func (m *Memory) RotateTenantAPIKey(_ context.Context, tenantID, expectedHash, hash, ciphertext string, audit domain.AuditEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.tenants[tenantID]
+	if !ok {
+		return ErrNotFound
+	}
+	if v.APIKeyHash != expectedHash {
+		return ErrConflict
+	}
+	v.APIKeyHash = hash
+	v.APIKeyCiphertext = ciphertext
+	v.APIKeyRecoverable = ciphertext != ""
+	m.tenants[tenantID] = v
+	m.audits = append(m.audits, audit)
 	return nil
 }
 func (m *Memory) ListTenants(context.Context) ([]domain.Tenant, error) {
@@ -248,6 +272,7 @@ func (m *Memory) ListTenants(context.Context) ([]domain.Tenant, error) {
 	defer m.mu.Unlock()
 	r := make([]domain.Tenant, 0, len(m.tenants))
 	for _, v := range m.tenants {
+		v.APIKeyRecoverable = v.APIKeyCiphertext != ""
 		r = append(r, v)
 	}
 	return r, nil

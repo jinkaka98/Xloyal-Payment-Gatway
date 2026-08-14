@@ -55,6 +55,8 @@ func (s Server) Handler() http.Handler {
 	m.HandleFunc("GET /admin/tenants", s.admin("viewer", s.listTenants))
 	m.HandleFunc("POST /admin/tenants", s.admin("super_admin", s.createTenant))
 	m.HandleFunc("PUT /admin/tenants/{id}", s.admin("super_admin", s.updateTenant))
+	m.HandleFunc("GET /admin/tenants/{id}/credentials", s.admin("super_admin", s.revealTenantCredential))
+	m.HandleFunc("POST /admin/tenants/{id}/credentials/rotate", s.admin("super_admin", s.rotateTenantCredential))
 	m.HandleFunc("GET /admin/merchant-ids", s.admin("viewer", s.listMerchantIDs))
 	m.HandleFunc("POST /admin/merchant-ids", s.admin("operator", s.createMerchantID))
 	m.HandleFunc("GET /admin/merchant-ids/{id}/connection", s.admin("viewer", s.getMerchantConnection))
@@ -924,6 +926,7 @@ func (s Server) listTenants(w http.ResponseWriter, r *http.Request, _ domain.Ten
 	v, err := s.Repo.ListTenants(r.Context())
 	for i := range v {
 		v[i].APIKeyHash = ""
+		v[i].APIKeyCiphertext = ""
 	}
 	respond(w, v, err)
 }
@@ -955,12 +958,22 @@ func (s Server) createTenant(w http.ResponseWriter, r *http.Request, _ domain.Te
 		}
 	}
 	apiKey := newAPIKey()
-	v := domain.Tenant{ID: "tenant_" + newID()[:16], MerchantID: merchant.ID, Name: in.Name, SiteURL: strings.TrimSpace(in.SiteURL), CallbackURL: strings.TrimSpace(in.CallbackURL), WebhookURL: strings.TrimSpace(in.WebhookURL), APIKeyHash: security.HashSecret(apiKey), Active: true, CreatedAt: time.Now().UTC()}
+	if s.Cipher == nil {
+		problem(w, http.StatusInternalServerError, "tenant credential encryption is not configured")
+		return
+	}
+	ciphertext, err := s.Cipher.Encrypt([]byte(apiKey))
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "tenant credential encryption failed")
+		return
+	}
+	v := domain.Tenant{ID: "tenant_" + newID()[:16], MerchantID: merchant.ID, Name: in.Name, SiteURL: strings.TrimSpace(in.SiteURL), CallbackURL: strings.TrimSpace(in.CallbackURL), WebhookURL: strings.TrimSpace(in.WebhookURL), APIKeyHash: security.HashSecret(apiKey), APIKeyCiphertext: ciphertext, APIKeyRecoverable: true, Active: true, CreatedAt: time.Now().UTC()}
 	if err := s.Repo.CreateTenant(r.Context(), v); err != nil {
 		problem(w, 500, "create tenant failed")
 		return
 	}
 	v.APIKeyHash = ""
+	v.APIKeyCiphertext = ""
 	write(w, 201, map[string]any{"tenant": v, "api_key": apiKey, "api_key_visible_once": true})
 }
 func (s Server) updateTenant(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
@@ -1002,8 +1015,72 @@ func (s Server) updateTenant(w http.ResponseWriter, r *http.Request, _ domain.Te
 		return
 	}
 	current.APIKeyHash = ""
+	current.APIKeyCiphertext = ""
 	s.Repo.AppendAudit(r.Context(), domain.AuditEvent{ID: newID(), Actor: "admin", Action: "tenant.updated", ResourceType: "tenant", ResourceID: current.ID, TenantID: current.ID, CreatedAt: time.Now().UTC()})
 	write(w, http.StatusOK, current)
+}
+
+func (s Server) revealTenantCredential(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
+	tenant, err := s.Repo.Tenant(r.Context(), r.PathValue("id"))
+	if err != nil {
+		notFound(w, err)
+		return
+	}
+	if tenant.APIKeyCiphertext == "" {
+		write(w, http.StatusConflict, map[string]any{"error": "API key rotation required", "code": "api_key_rotation_required"})
+		return
+	}
+	if s.Cipher == nil {
+		problem(w, http.StatusInternalServerError, "tenant credential encryption is not configured")
+		return
+	}
+	apiKey, err := s.Cipher.Decrypt(tenant.APIKeyCiphertext)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "tenant credential decryption failed")
+		return
+	}
+	if err := s.Repo.AppendAudit(r.Context(), domain.AuditEvent{ID: newID(), Actor: "admin", Action: "tenant.api_key_revealed", ResourceType: "tenant", ResourceID: tenant.ID, TenantID: tenant.ID, CreatedAt: time.Now().UTC()}); err != nil {
+		problem(w, http.StatusInternalServerError, "audit tenant credential reveal failed")
+		return
+	}
+	write(w, http.StatusOK, map[string]any{"tenant_id": tenant.ID, "api_key": string(apiKey)})
+}
+
+func (s Server) rotateTenantCredential(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
+	tenant, err := s.Repo.Tenant(r.Context(), r.PathValue("id"))
+	if err != nil {
+		notFound(w, err)
+		return
+	}
+	if s.Cipher == nil {
+		problem(w, http.StatusInternalServerError, "tenant credential encryption is not configured")
+		return
+	}
+	apiKey := newAPIKey()
+	expectedHash := tenant.APIKeyHash
+	ciphertext, err := s.Cipher.Encrypt([]byte(apiKey))
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "tenant credential encryption failed")
+		return
+	}
+	tenant.APIKeyHash = security.HashSecret(apiKey)
+	tenant.APIKeyCiphertext = ciphertext
+	tenant.APIKeyRecoverable = true
+	rotatedAt := time.Now().UTC()
+	audit := domain.AuditEvent{ID: newID(), Actor: "admin", Action: "tenant.api_key_rotated", ResourceType: "tenant", ResourceID: tenant.ID, TenantID: tenant.ID, CreatedAt: rotatedAt}
+	if err := s.Repo.RotateTenantAPIKey(r.Context(), tenant.ID, expectedHash, tenant.APIKeyHash, tenant.APIKeyCiphertext, audit); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			problem(w, http.StatusConflict, "tenant credential changed; reload and retry")
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			problem(w, http.StatusNotFound, "not found")
+			return
+		}
+		problem(w, http.StatusInternalServerError, "rotate tenant credential failed")
+		return
+	}
+	write(w, http.StatusOK, map[string]any{"tenant_id": tenant.ID, "api_key": apiKey, "rotated_at": rotatedAt})
 }
 func (s Server) listMerchants(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
 	v, err := s.Repo.ListMerchantAccounts(r.Context(), r.URL.Query().Get("tenant_id"))

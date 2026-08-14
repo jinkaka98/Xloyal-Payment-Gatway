@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS tenants (
     callback_url TEXT,
     webhook_url TEXT,
     api_key_hash TEXT NOT NULL UNIQUE,
+    api_key_ciphertext TEXT,
     active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

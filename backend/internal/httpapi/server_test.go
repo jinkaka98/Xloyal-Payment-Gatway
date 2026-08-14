@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -231,8 +232,9 @@ func TestUpdateMerchantBrowserCredentialEncryptsAndQueuesReconnect(t *testing.T)
 
 func TestCreateTenantGeneratesCredentialsAndPersistsConnectivity(t *testing.T) {
 	repo := store.NewMemory()
+	cipher, _ := security.NewCipher(bytes.Repeat([]byte{4}, 32))
 	repo.CreateMerchantID(context.Background(), domain.MerchantID{ID: "interactive-browser", Name: "InterActive QRIS browser", Active: true})
-	h := Server{Repo: repo, AdminTokens: map[string]string{"admin": "super_admin"}}.Handler()
+	h := Server{Repo: repo, Cipher: cipher, AdminTokens: map[string]string{"admin": "super_admin"}}.Handler()
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/admin/tenants", strings.NewReader(`{"name":"Website utama","merchant_id":"interactive-browser","site_url":"https://shop.example","callback_url":"https://shop.example/qris/callback","webhook_url":"https://shop.example/webhooks/qris"}`))
 	req.Header.Set("Authorization", "Bearer admin")
@@ -261,6 +263,108 @@ func TestCreateTenantGeneratesCredentialsAndPersistsConnectivity(t *testing.T) {
 	if strings.Contains(w.Body.String(), "api_key_hash") {
 		t.Fatalf("API key hash leaked: %s", w.Body.String())
 	}
+	stored, err := repo.Tenant(context.Background(), response.Tenant.ID)
+	if err != nil || stored.APIKeyCiphertext == "" || stored.APIKeyHash == "" {
+		t.Fatalf("tenant credential was not persisted: tenant=%+v err=%v", stored, err)
+	}
+	plain, err := cipher.Decrypt(stored.APIKeyCiphertext)
+	if err != nil || string(plain) != response.APIKey {
+		t.Fatal("persisted tenant credential did not decrypt to the generated API key")
+	}
+	if strings.Contains(w.Body.String(), stored.APIKeyCiphertext) {
+		t.Fatal("tenant credential ciphertext leaked in create response")
+	}
+}
+
+func TestTenantCredentialRevealAndRotateAreSuperAdminOnly(t *testing.T) {
+	repo := store.NewMemory()
+	cipher, _ := security.NewCipher(bytes.Repeat([]byte{5}, 32))
+	oldKey := "xl_live_existing"
+	ciphertext, _ := cipher.Encrypt([]byte(oldKey))
+	repo.CreateTenant(context.Background(), domain.Tenant{ID: "tenant-secret", Name: "Secret", APIKeyHash: security.HashSecret(oldKey), APIKeyCiphertext: ciphertext, Active: true, CreatedAt: time.Now().UTC()})
+	h := Server{Repo: repo, Cipher: cipher, AdminTokens: map[string]string{"view": "viewer", "operate": "operator", "admin": "super_admin"}}.Handler()
+	listed := httptest.NewRecorder()
+	listRequest := httptest.NewRequest(http.MethodGet, "/admin/tenants", nil)
+	listRequest.Header.Set("Authorization", "Bearer view")
+	h.ServeHTTP(listed, listRequest)
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"api_key_recoverable":true`) || strings.Contains(listed.Body.String(), oldKey) || strings.Contains(listed.Body.String(), ciphertext) {
+		t.Fatalf("tenant list leaked credential or omitted recovery state: code=%d body=%s", listed.Code, listed.Body.String())
+	}
+
+	for _, token := range []string{"view", "operate"} {
+		for method, path := range map[string]string{
+			http.MethodGet:  "/admin/tenants/tenant-secret/credentials",
+			http.MethodPost: "/admin/tenants/tenant-secret/credentials/rotate",
+		} {
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(method, path, nil)
+			req.Header.Set("Authorization", "Bearer "+token)
+			h.ServeHTTP(w, req)
+			if w.Code != http.StatusForbidden || strings.Contains(w.Body.String(), oldKey) {
+				t.Fatalf("role %s %s code=%d body=%s", token, path, w.Code, w.Body.String())
+			}
+		}
+	}
+
+	revealed := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/admin/tenants/tenant-secret/credentials", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(revealed, req)
+	if revealed.Code != http.StatusOK || !strings.Contains(revealed.Body.String(), `"api_key":"`+oldKey+`"`) {
+		t.Fatalf("reveal code=%d body=%s", revealed.Code, revealed.Body.String())
+	}
+
+	rotated := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/admin/tenants/tenant-secret/credentials/rotate", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(rotated, req)
+	if rotated.Code != http.StatusOK {
+		t.Fatalf("rotate code=%d body=%s", rotated.Code, rotated.Body.String())
+	}
+	var response struct {
+		TenantID string `json:"tenant_id"`
+		APIKey   string `json:"api_key"`
+	}
+	if err := json.Unmarshal(rotated.Body.Bytes(), &response); err != nil || response.TenantID != "tenant-secret" || !strings.HasPrefix(response.APIKey, "xl_live_") || response.APIKey == oldKey {
+		t.Fatalf("rotated response=%+v err=%v", response, err)
+	}
+	if _, err := repo.TenantByAPIKey(context.Background(), security.HashSecret(oldKey)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("old API key still authenticates: %v", err)
+	}
+	if tenant, err := repo.TenantByAPIKey(context.Background(), security.HashSecret(response.APIKey)); err != nil || tenant.ID != "tenant-secret" {
+		t.Fatalf("new API key does not authenticate: tenant=%+v err=%v", tenant, err)
+	}
+	audits, err := repo.ListAudit(context.Background(), "tenant-secret", 10)
+	if err != nil || len(audits) != 2 {
+		t.Fatalf("credential audit count=%d err=%v", len(audits), err)
+	}
+	encoded, _ := json.Marshal(audits)
+	if strings.Contains(string(encoded), oldKey) || strings.Contains(string(encoded), response.APIKey) || strings.Contains(string(encoded), ciphertext) {
+		t.Fatal("credential audit leaked secret material")
+	}
+}
+
+func TestLegacyTenantCredentialRequiresRotationAndTenantListDoesNotLeakSecrets(t *testing.T) {
+	repo := store.NewMemory()
+	cipher, _ := security.NewCipher(bytes.Repeat([]byte{6}, 32))
+	repo.CreateTenant(context.Background(), domain.Tenant{ID: "tenant-legacy", Name: "Alpakyros LITE", APIKeyHash: security.HashSecret("legacy-key"), Active: true, CreatedAt: time.Now().UTC()})
+	h := Server{Repo: repo, Cipher: cipher, AdminTokens: map[string]string{"admin": "super_admin"}}.Handler()
+
+	listed := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/admin/tenants", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(listed, req)
+	if listed.Code != http.StatusOK || strings.Contains(listed.Body.String(), "legacy-key") || strings.Contains(listed.Body.String(), security.HashSecret("legacy-key")) || !strings.Contains(listed.Body.String(), `"api_key_recoverable":false`) {
+		t.Fatalf("list code=%d body=%s", listed.Code, listed.Body.String())
+	}
+
+	reveal := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/admin/tenants/tenant-legacy/credentials", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(reveal, req)
+	if reveal.Code != http.StatusConflict || !strings.Contains(reveal.Body.String(), "API key rotation required") || !strings.Contains(reveal.Body.String(), `"code":"api_key_rotation_required"`) {
+		t.Fatalf("legacy reveal code=%d body=%s", reveal.Code, reveal.Body.String())
+	}
 }
 
 func TestUpdateTenantKeepsAPIKeyAndChangesConnectivity(t *testing.T) {
@@ -268,7 +372,7 @@ func TestUpdateTenantKeepsAPIKeyAndChangesConnectivity(t *testing.T) {
 	ctx := context.Background()
 	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
 	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-b", Active: true})
-	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", MerchantID: "merchant-a", Name: "Old", APIKeyHash: security.HashSecret("tenant-key"), Active: true, CreatedAt: time.Now().UTC()})
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", MerchantID: "merchant-a", Name: "Old", APIKeyHash: security.HashSecret("tenant-key"), APIKeyCiphertext: "encrypted-key", Active: true, CreatedAt: time.Now().UTC()})
 	h := Server{Repo: repo, AdminTokens: map[string]string{"admin": "super_admin"}}.Handler()
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/admin/tenants/tenant-a", strings.NewReader(`{"name":"Updated tenant","merchant_id":"merchant-b","site_url":"https://new.example","callback_url":"","webhook_url":"https://new.example/qris","active":false}`))
@@ -278,7 +382,7 @@ func TestUpdateTenantKeepsAPIKeyAndChangesConnectivity(t *testing.T) {
 		t.Fatalf("update code=%d body=%s", w.Code, w.Body.String())
 	}
 	stored, err := repo.Tenant(ctx, "tenant-a")
-	if err != nil || stored.Name != "Updated tenant" || stored.SiteURL != "https://new.example" || stored.APIKeyHash != security.HashSecret("tenant-key") {
+	if err != nil || stored.Name != "Updated tenant" || stored.SiteURL != "https://new.example" || stored.APIKeyHash != security.HashSecret("tenant-key") || stored.APIKeyCiphertext != "encrypted-key" {
 		t.Fatalf("stored=%+v err=%v", stored, err)
 	}
 }

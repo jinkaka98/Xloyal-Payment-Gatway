@@ -119,6 +119,20 @@
         "responses": {"200": {"description": "Updated tenant", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Tenant"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
       }
     },
+    "/admin/tenants/{id}/credentials": {
+      "get": {
+        "tags": ["Admin"], "operationId": "revealTenantCredential", "security": [{"AdminBearer": []}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Decrypted tenant API key", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantCredentialReveal"}}}}, "403": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"description": "Legacy credential must be rotated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Problem"}}}}}
+      }
+    },
+    "/admin/tenants/{id}/credentials/rotate": {
+      "post": {
+        "tags": ["Admin"], "operationId": "rotateTenantCredential", "security": [{"AdminBearer": []}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Rotated tenant API key", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantCredentialRotation"}}}}, "403": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"description": "Credential changed concurrently; reload before retrying", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Problem"}}}}}
+      }
+    },
     "/admin/merchant-accounts": {
       "get": {
         "tags": ["Admin"], "operationId": "listMerchantAccounts", "security": [{"AdminBearer": []}],
@@ -259,7 +273,7 @@
       "Problem": {"description": "Error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Problem"}}}}
     },
     "schemas": {
-      "Problem": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}},
+      "Problem": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}, "code": {"type": "string"}}},
       "HealthCheck": {
         "type": "object",
         "required": ["id", "name", "kind", "status", "latency_ms", "last_checked_at", "message"],
@@ -300,8 +314,8 @@
         }
       },
       "Tenant": {
-        "type": "object", "required": ["id", "name", "active", "created_at"],
-        "properties": {"id": {"type": "string"}, "merchant_id": {"type": "string"}, "name": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}, "active": {"type": "boolean"}, "created_at": {"type": "string", "format": "date-time"}}
+        "type": "object", "required": ["id", "name", "api_key_recoverable", "active", "created_at"],
+        "properties": {"id": {"type": "string"}, "merchant_id": {"type": "string"}, "name": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}, "api_key_recoverable": {"type": "boolean", "description": "False for legacy credentials that must be rotated before reveal."}, "active": {"type": "boolean"}, "created_at": {"type": "string", "format": "date-time"}}
       },
       "UpdateTenant": {
         "type": "object", "additionalProperties": false, "required": ["name", "merchant_id", "site_url", "callback_url", "webhook_url", "active"],
@@ -353,6 +367,14 @@
           "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
           "last_checked_at": {"type": ["string", "null"], "format": "date-time"}, "check_count": {"type": "integer", "minimum": 0}
         }
+      },
+      "TenantCredentialReveal": {
+        "type": "object", "required": ["tenant_id", "api_key"],
+        "properties": {"tenant_id": {"type": "string"}, "api_key": {"type": "string", "format": "password", "description": "Sensitive plaintext credential returned only to a super admin."}}
+      },
+      "TenantCredentialRotation": {
+        "type": "object", "required": ["tenant_id", "api_key", "rotated_at"],
+        "properties": {"tenant_id": {"type": "string"}, "api_key": {"type": "string", "format": "password", "description": "Sensitive plaintext credential returned only to a super admin."}, "rotated_at": {"type": "string", "format": "date-time"}}
       },
       "CreateTenantQRIS": {
         "type": "object", "additionalProperties": false, "required": ["template_id", "amount"],

@@ -47,15 +47,17 @@ func (i *Invoice) Transition(next InvoiceStatus, now time.Time) error {
 }
 
 type Tenant struct {
-	ID          string    `json:"id"`
-	MerchantID  string    `json:"merchant_id,omitempty"`
-	Name        string    `json:"name"`
-	SiteURL     string    `json:"site_url,omitempty"`
-	CallbackURL string    `json:"callback_url,omitempty"`
-	WebhookURL  string    `json:"webhook_url,omitempty"`
-	APIKeyHash  string    `json:"-"`
-	Active      bool      `json:"active"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID                string    `json:"id"`
+	MerchantID        string    `json:"merchant_id,omitempty"`
+	Name              string    `json:"name"`
+	SiteURL           string    `json:"site_url,omitempty"`
+	CallbackURL       string    `json:"callback_url,omitempty"`
+	WebhookURL        string    `json:"webhook_url,omitempty"`
+	APIKeyHash        string    `json:"-"`
+	APIKeyCiphertext  string    `json:"-"`
+	APIKeyRecoverable bool      `json:"api_key_recoverable"`
+	Active            bool      `json:"active"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 type MerchantID struct {
 	ID                    string    `json:"id"`

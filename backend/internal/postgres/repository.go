@@ -22,16 +22,18 @@ func New(db *sql.DB) *Repository                       { return &Repository{DB: 
 func (r *Repository) Health(ctx context.Context) error { return r.DB.PingContext(ctx) }
 func (r *Repository) TenantByAPIKey(ctx context.Context, h string) (domain.Tenant, error) {
 	var v domain.Tenant
-	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),api_key_hash,active,created_at FROM tenants WHERE api_key_hash=$1 AND active=true`, h).Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.APIKeyHash, &v.Active, &v.CreatedAt)
+	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),api_key_hash,COALESCE(api_key_ciphertext,''),active,created_at FROM tenants WHERE api_key_hash=$1 AND active=true`, h).Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.APIKeyHash, &v.APIKeyCiphertext, &v.Active, &v.CreatedAt)
+	v.APIKeyRecoverable = v.APIKeyCiphertext != ""
 	return v, notFound(err)
 }
 func (r *Repository) Tenant(ctx context.Context, id string) (domain.Tenant, error) {
 	var v domain.Tenant
-	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),api_key_hash,active,created_at FROM tenants WHERE id=$1`, id).Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.APIKeyHash, &v.Active, &v.CreatedAt)
+	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),api_key_hash,COALESCE(api_key_ciphertext,''),active,created_at FROM tenants WHERE id=$1`, id).Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.APIKeyHash, &v.APIKeyCiphertext, &v.Active, &v.CreatedAt)
+	v.APIKeyRecoverable = v.APIKeyCiphertext != ""
 	return v, notFound(err)
 }
 func (r *Repository) CreateTenant(ctx context.Context, v domain.Tenant) error {
-	_, err := r.DB.ExecContext(ctx, `INSERT INTO tenants(id,merchant_id,name,site_url,callback_url,webhook_url,api_key_hash,active,created_at) VALUES($1,NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,$8,$9)`, v.ID, v.MerchantID, v.Name, v.SiteURL, v.CallbackURL, v.WebhookURL, v.APIKeyHash, v.Active, v.CreatedAt)
+	_, err := r.DB.ExecContext(ctx, `INSERT INTO tenants(id,merchant_id,name,site_url,callback_url,webhook_url,api_key_hash,api_key_ciphertext,active,created_at) VALUES($1,NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,NULLIF($8,''),$9,$10)`, v.ID, v.MerchantID, v.Name, v.SiteURL, v.CallbackURL, v.WebhookURL, v.APIKeyHash, v.APIKeyCiphertext, v.Active, v.CreatedAt)
 	return err
 }
 func (r *Repository) UpdateTenant(ctx context.Context, v domain.Tenant) error {
@@ -45,8 +47,41 @@ func (r *Repository) UpdateTenant(ctx context.Context, v domain.Tenant) error {
 	}
 	return nil
 }
+func (r *Repository) RotateTenantAPIKey(ctx context.Context, tenantID, expectedHash, hash, ciphertext string, audit domain.AuditEvent) error {
+	tx, err := r.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE tenants SET api_key_hash=$1,api_key_ciphertext=$2 WHERE id=$3 AND api_key_hash=$4`, hash, ciphertext, tenantID, expectedHash)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		var exists bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM tenants WHERE id=$1)`, tenantID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			return store.ErrConflict
+		}
+		return store.ErrNotFound
+	}
+	meta, err := json.Marshal(audit.Metadata)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events(id,tenant_id,actor,action,resource_type,resource_id,metadata,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, audit.ID, null(audit.TenantID), audit.Actor, audit.Action, audit.ResourceType, audit.ResourceID, meta, audit.CreatedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 func (r *Repository) ListTenants(ctx context.Context) ([]domain.Tenant, error) {
-	rows, err := r.DB.QueryContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),api_key_hash,active,created_at FROM tenants ORDER BY created_at DESC`)
+	rows, err := r.DB.QueryContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),api_key_hash,COALESCE(api_key_ciphertext,''),active,created_at FROM tenants ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -54,9 +89,10 @@ func (r *Repository) ListTenants(ctx context.Context) ([]domain.Tenant, error) {
 	out := make([]domain.Tenant, 0)
 	for rows.Next() {
 		var v domain.Tenant
-		if err := rows.Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.APIKeyHash, &v.Active, &v.CreatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.APIKeyHash, &v.APIKeyCiphertext, &v.Active, &v.CreatedAt); err != nil {
 			return nil, err
 		}
+		v.APIKeyRecoverable = v.APIKeyCiphertext != ""
 		out = append(out, v)
 	}
 	return out, rows.Err()
