@@ -10,7 +10,10 @@ import (
 	"xloyal/backend/internal/domain"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
+)
 
 type Repository interface {
 	Health(context.Context) error
@@ -46,11 +49,15 @@ type Repository interface {
 	ListQRISTemplates(context.Context) ([]domain.QRISTemplate, error)
 	AllowQRISRequest(context.Context, string, string, time.Time, int) (bool, int, error)
 	CreateTestPayment(context.Context, domain.TestPayment) error
+	CreateTenantTestPayment(context.Context, domain.TestPayment, time.Time, int) (domain.TestPayment, bool, bool, int, error)
 	TestPayment(context.Context, string) (domain.TestPayment, error)
+	TestPaymentForTenant(context.Context, string, string) (domain.TestPayment, error)
 	UpdatePendingTestPayment(context.Context, domain.TestPayment) (bool, error)
+	MatchPendingTestPayment(context.Context, domain.TestPayment, domain.PortalTransaction) (bool, error)
 	PendingTestPayments(context.Context, time.Time, int) ([]domain.TestPayment, error)
 	ExpirePendingTestPayments(context.Context, time.Time) (int64, error)
 	ListTestPayments(context.Context, int) ([]domain.TestPayment, error)
+	ListTenantTestPayments(context.Context, string, int) ([]domain.TestPayment, error)
 	AppendAudit(context.Context, domain.AuditEvent) error
 	ListAudit(context.Context, string, int) ([]domain.AuditEvent, error)
 }
@@ -417,11 +424,57 @@ func (m *Memory) CreateTestPayment(_ context.Context, v domain.TestPayment) erro
 	m.payments[v.ID] = v
 	return nil
 }
+func (m *Memory) CreateTenantTestPayment(_ context.Context, v domain.TestPayment, now time.Time, max int) (domain.TestPayment, bool, bool, int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.templates[v.QRISTemplateID]; !ok {
+		return domain.TestPayment{}, false, false, 0, ErrNotFound
+	}
+	for _, existing := range m.payments {
+		if existing.TenantID != v.TenantID || existing.IdempotencyKey == "" || existing.IdempotencyKey != v.IdempotencyKey {
+			continue
+		}
+		if existing.Amount != v.Amount || existing.QRISTemplateID != v.QRISTemplateID || existing.ExpiresAt.Sub(existing.CreatedAt) != v.ExpiresAt.Sub(v.CreatedAt) {
+			return domain.TestPayment{}, false, false, 0, ErrConflict
+		}
+		return existing, false, true, 0, nil
+	}
+	windowStart := now.UTC().Truncate(time.Minute)
+	rateKey := v.QRISTemplateID + "\x00" + v.TenantID
+	window := m.qrisRateWindows[rateKey]
+	if window.StartedAt.Before(windowStart) {
+		window = qrisRateWindow{StartedAt: windowStart}
+	}
+	retry := int(windowStart.Add(time.Minute).Sub(now.UTC()).Seconds())
+	if retry < 1 {
+		retry = 1
+	}
+	if window.Count >= max {
+		return domain.TestPayment{}, false, false, retry, nil
+	}
+	window.Count++
+	m.qrisRateWindows[rateKey] = window
+	if v.NextCheckAt == nil && v.Status == domain.InvoicePending {
+		next := v.CreatedAt.Add(15 * time.Second)
+		v.NextCheckAt = &next
+	}
+	m.payments[v.ID] = v
+	return v, true, true, 0, nil
+}
 func (m *Memory) TestPayment(_ context.Context, id string) (domain.TestPayment, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	v, ok := m.payments[id]
 	if !ok {
+		return domain.TestPayment{}, ErrNotFound
+	}
+	return v, nil
+}
+func (m *Memory) TestPaymentForTenant(_ context.Context, tenantID, id string) (domain.TestPayment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.payments[id]
+	if !ok || v.TenantID != tenantID || v.RequestSource != "tenant_api" {
 		return domain.TestPayment{}, ErrNotFound
 	}
 	return v, nil
@@ -433,10 +486,43 @@ func (m *Memory) UpdatePendingTestPayment(_ context.Context, v domain.TestPaymen
 	if !ok {
 		return false, ErrNotFound
 	}
-	if old.Status != domain.InvoicePending {
+	if old.Status != domain.InvoicePending || old.CheckCount != v.CheckCount-1 {
 		return false, nil
 	}
+	if v.MatchedTransactionID != "" {
+		for id, payment := range m.payments {
+			if id != v.ID && payment.MatchedTransactionID == v.MatchedTransactionID {
+				return false, nil
+			}
+		}
+	}
 	m.payments[v.ID] = v
+	return true, nil
+}
+func (m *Memory) MatchPendingTestPayment(_ context.Context, v domain.TestPayment, transaction domain.PortalTransaction) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	old, ok := m.payments[v.ID]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if old.Status != domain.InvoicePending || old.CheckCount != v.CheckCount-1 {
+		return false, nil
+	}
+	for id, payment := range m.payments {
+		if id != v.ID && payment.MatchedTransactionID == v.MatchedTransactionID {
+			return false, nil
+		}
+	}
+	m.payments[v.ID] = v
+	for id, existing := range m.portalTransactions {
+		if existing.MerchantID == transaction.MerchantID && existing.Reference == transaction.Reference {
+			transaction.ID, transaction.CreatedAt = existing.ID, existing.CreatedAt
+			m.portalTransactions[id] = transaction
+			return true, nil
+		}
+	}
+	m.portalTransactions[transaction.ID] = transaction
 	return true, nil
 }
 func (m *Memory) PendingTestPayments(_ context.Context, due time.Time, limit int) ([]domain.TestPayment, error) {
@@ -477,6 +563,21 @@ func (m *Memory) ListTestPayments(_ context.Context, limit int) ([]domain.TestPa
 	out := make([]domain.TestPayment, 0, len(m.payments))
 	for _, v := range m.payments {
 		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+func (m *Memory) ListTenantTestPayments(_ context.Context, tenantID string, limit int) ([]domain.TestPayment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]domain.TestPayment, 0)
+	for _, v := range m.payments {
+		if v.TenantID == tenantID && v.RequestSource == "tenant_api" {
+			out = append(out, v)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	if len(out) > limit {

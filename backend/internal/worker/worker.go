@@ -214,6 +214,16 @@ func (w Worker) checkTestPaymentsForMerchants(ctx context.Context, now time.Time
 	if err != nil {
 		return err
 	}
+	claimedTransactionIDs := make(map[string]struct{})
+	allPayments, err := w.Repo.ListTestPayments(ctx, 1000)
+	if err != nil {
+		return err
+	}
+	for _, payment := range allPayments {
+		if payment.MatchedTransactionID != "" {
+			claimedTransactionIDs[payment.MatchedTransactionID] = struct{}{}
+		}
+	}
 	ledgers := make(map[string][]domain.PortalTransaction)
 	for _, payment := range items {
 		if syncedMerchants != nil {
@@ -243,11 +253,14 @@ func (w Worker) checkTestPaymentsForMerchants(ctx context.Context, now time.Time
 				if transaction.Status != "paid" || transaction.Amount != payment.Amount || transaction.InvoiceID != "" {
 					continue
 				}
+				if _, claimed := claimedTransactionIDs[transaction.ID]; claimed {
+					continue
+				}
 				if referenceMatches(transaction.Reference, payment.UniqueCode) {
 					uniqueMatches = append(uniqueMatches, transaction)
 					continue
 				}
-				if !transaction.PaidAt.Before(payment.CreatedAt) && !transaction.PaidAt.After(payment.ExpiresAt) && withinMatchWindow(transaction.PaidAt, payment.CreatedAt, TestPaymentMatchWindow) {
+				if uniquelyMatchesPaymentByAmountTime(transaction, payment, allPayments) {
 					timeMatches = append(timeMatches, transaction)
 				}
 			}
@@ -262,6 +275,7 @@ func (w Worker) checkTestPaymentsForMerchants(ctx context.Context, now time.Time
 			unique = false
 		}
 
+		var matchedTransaction *domain.PortalTransaction
 		switch len(matches) {
 		case 1:
 			payment.Status = domain.InvoicePaid
@@ -279,7 +293,7 @@ func (w Worker) checkTestPaymentsForMerchants(ctx context.Context, now time.Time
 			if unique {
 				transaction.MatchConfidence = "qris_test_reference_unique"
 			}
-			_ = w.Repo.CreatePortalTransaction(ctx, transaction)
+			matchedTransaction = &transaction
 		default:
 			if len(matches) > 1 {
 				payment.MatchConfidence = "ambiguous_amount_time"
@@ -299,11 +313,42 @@ func (w Worker) checkTestPaymentsForMerchants(ctx context.Context, now time.Time
 				payment.NextCheckAt = &next
 			}
 		}
-		if _, err := w.Repo.UpdatePendingTestPayment(ctx, payment); err != nil {
+		var updated bool
+		if matchedTransaction != nil {
+			updated, err = w.Repo.MatchPendingTestPayment(ctx, payment, *matchedTransaction)
+		} else {
+			updated, err = w.Repo.UpdatePendingTestPayment(ctx, payment)
+		}
+		if err != nil {
 			return err
+		}
+		if !updated {
+			continue
+		}
+		if matchedTransaction != nil {
+			claimedTransactionIDs[payment.MatchedTransactionID] = struct{}{}
 		}
 	}
 	return nil
+}
+
+func uniquelyMatchesPaymentByAmountTime(transaction domain.PortalTransaction, target domain.TestPayment, payments []domain.TestPayment) bool {
+	matchedID := ""
+	count := 0
+	for _, payment := range payments {
+		if payment.Status != domain.InvoicePending || payment.MerchantID != transaction.MerchantID || payment.Amount != transaction.Amount {
+			continue
+		}
+		if transaction.PaidAt.Before(payment.CreatedAt) || transaction.PaidAt.After(payment.ExpiresAt) || !withinMatchWindow(transaction.PaidAt, payment.CreatedAt, TestPaymentMatchWindow) {
+			continue
+		}
+		if referenceMatches(transaction.Reference, payment.UniqueCode) {
+			return payment.ID == target.ID
+		}
+		matchedID = payment.ID
+		count++
+	}
+	return count == 1 && matchedID == target.ID
 }
 
 func (w Worker) validateTestPayments(ctx context.Context) error {

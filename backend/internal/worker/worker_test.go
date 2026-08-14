@@ -5,10 +5,41 @@ import (
 	"errors"
 	"testing"
 	"time"
+
 	"xloyal/backend/internal/domain"
 	"xloyal/backend/internal/gateway"
 	"xloyal/backend/internal/store"
 )
+
+func TestOnePortalTransactionCannotArbitrarilyPaySameAmountRequests(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemory()
+	now := time.Date(2026, 8, 14, 3, 0, 0, 0, time.UTC)
+	createdAt := now.Add(-time.Minute)
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-test"})
+	for _, id := range []string{"payment-a", "payment-b"} {
+		repo.CreateTestPayment(ctx, domain.TestPayment{
+			ID: id, QRISTemplateID: "template-test", MerchantID: "merchant-test", TenantID: "tenant-test",
+			Amount: 1013, Status: domain.InvoicePending, RequestSource: "tenant_api",
+			CreatedAt: createdAt, UpdatedAt: createdAt, ExpiresAt: now.Add(10 * time.Minute),
+		})
+	}
+	repo.CreatePortalTransaction(ctx, domain.PortalTransaction{
+		ID: "portal-one", MerchantID: "merchant-test", Reference: "portal-ref", Amount: 1013,
+		Status: "paid", PaidAt: createdAt.Add(20 * time.Second), Source: "browser", CreatedAt: now,
+	})
+
+	w := Worker{Repo: repo, Now: func() time.Time { return now }}
+	if err := w.checkTestPayments(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"payment-a", "payment-b"} {
+		payment, _ := repo.TestPayment(ctx, id)
+		if payment.Status != domain.InvoicePending {
+			t.Fatalf("ambiguous request %s was marked %s", id, payment.Status)
+		}
+	}
+}
 
 type failingPortalRepository struct {
 	store.Repository

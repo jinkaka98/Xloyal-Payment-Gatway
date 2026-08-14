@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"xloyal/backend/internal/domain"
 	"xloyal/backend/internal/store"
 )
@@ -319,28 +320,120 @@ func (r *Repository) AllowQRISRequest(ctx context.Context, templateID, tenantID 
 	return count <= max, retry, err
 }
 func (r *Repository) CreateTestPayment(ctx context.Context, v domain.TestPayment) error {
-	_, err := r.DB.ExecContext(ctx, `INSERT INTO test_payments(id,qris_template_id,merchant_id,tenant_id,amount,dynamic_payload,unique_code,status,request_source,match_confidence,matched_transaction_id,created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count) VALUES($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6,$7,$8,$9,$10,NULLIF($11,''),$12,$13,$14,$15,$16,$17)`, v.ID, v.QRISTemplateID, v.MerchantID, v.TenantID, v.Amount, v.DynamicPayload, v.UniqueCode, v.Status, v.RequestSource, v.MatchConfidence, v.MatchedTransactionID, v.CreatedAt, v.UpdatedAt, v.ExpiresAt, v.LastCheckedAt, v.NextCheckAt, v.CheckCount)
+	_, err := r.DB.ExecContext(ctx, `INSERT INTO test_payments(id,idempotency_key,qris_template_id,merchant_id,tenant_id,amount,dynamic_payload,unique_code,status,request_source,match_confidence,matched_transaction_id,created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count) VALUES($1,NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,NULLIF($12,''),$13,$14,$15,$16,$17,$18)`, v.ID, v.IdempotencyKey, v.QRISTemplateID, v.MerchantID, v.TenantID, v.Amount, v.DynamicPayload, v.UniqueCode, v.Status, v.RequestSource, v.MatchConfidence, v.MatchedTransactionID, v.CreatedAt, v.UpdatedAt, v.ExpiresAt, v.LastCheckedAt, v.NextCheckAt, v.CheckCount)
 	return err
 }
 
-const testPaymentColumns = `SELECT id,qris_template_id,COALESCE(merchant_id,''),COALESCE(tenant_id,''),amount,dynamic_payload,unique_code,status,request_source,match_confidence,COALESCE(matched_transaction_id,''),created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count FROM test_payments`
+func (r *Repository) CreateTenantTestPayment(ctx context.Context, v domain.TestPayment, now time.Time, max int) (domain.TestPayment, bool, bool, int, error) {
+	tx, err := r.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.TestPayment{}, false, false, 0, err
+	}
+	defer tx.Rollback()
+	existing, lookupErr := scanTestPayment(tx.QueryRowContext(ctx, testPaymentColumns+` WHERE tenant_id=$1 AND idempotency_key=$2 AND request_source='tenant_api'`, v.TenantID, v.IdempotencyKey))
+	if lookupErr == nil {
+		if existing.Amount != v.Amount || existing.QRISTemplateID != v.QRISTemplateID || existing.ExpiresAt.Sub(existing.CreatedAt) != v.ExpiresAt.Sub(v.CreatedAt) {
+			return domain.TestPayment{}, false, false, 0, store.ErrConflict
+		}
+		return existing, false, true, 0, nil
+	}
+	if !errors.Is(lookupErr, sql.ErrNoRows) {
+		return domain.TestPayment{}, false, false, 0, lookupErr
+	}
+	windowStart := now.UTC().Truncate(time.Minute)
+	var count int
+	err = tx.QueryRowContext(ctx, `INSERT INTO qris_template_rate_limits(template_id,tenant_id,window_started_at,request_count) VALUES($1,$2,$3,1) ON CONFLICT(template_id,tenant_id) DO UPDATE SET window_started_at=CASE WHEN qris_template_rate_limits.window_started_at < EXCLUDED.window_started_at THEN EXCLUDED.window_started_at ELSE qris_template_rate_limits.window_started_at END,request_count=CASE WHEN qris_template_rate_limits.window_started_at < EXCLUDED.window_started_at THEN 1 ELSE qris_template_rate_limits.request_count+1 END RETURNING request_count`, v.QRISTemplateID, v.TenantID, windowStart).Scan(&count)
+	if err != nil {
+		return domain.TestPayment{}, false, false, 0, err
+	}
+	existing, lookupErr = scanTestPayment(tx.QueryRowContext(ctx, testPaymentColumns+` WHERE tenant_id=$1 AND idempotency_key=$2 AND request_source='tenant_api'`, v.TenantID, v.IdempotencyKey))
+	if lookupErr == nil {
+		if existing.Amount != v.Amount || existing.QRISTemplateID != v.QRISTemplateID || existing.ExpiresAt.Sub(existing.CreatedAt) != v.ExpiresAt.Sub(v.CreatedAt) {
+			return domain.TestPayment{}, false, false, 0, store.ErrConflict
+		}
+		return existing, false, true, 0, nil
+	}
+	if !errors.Is(lookupErr, sql.ErrNoRows) {
+		return domain.TestPayment{}, false, false, 0, lookupErr
+	}
+	retry := int(windowStart.Add(time.Minute).Sub(now.UTC()).Seconds())
+	if retry < 1 {
+		retry = 1
+	}
+	if count > max {
+		return domain.TestPayment{}, false, false, retry, nil
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO test_payments(id,idempotency_key,qris_template_id,merchant_id,tenant_id,amount,dynamic_payload,unique_code,status,request_source,match_confidence,matched_transaction_id,created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count) VALUES($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,'tenant_api',$10,NULLIF($11,''),$12,$13,$14,$15,$16,$17) ON CONFLICT(tenant_id,idempotency_key) WHERE request_source='tenant_api' AND idempotency_key IS NOT NULL DO NOTHING`, v.ID, v.IdempotencyKey, v.QRISTemplateID, v.MerchantID, v.TenantID, v.Amount, v.DynamicPayload, v.UniqueCode, v.Status, v.MatchConfidence, v.MatchedTransactionID, v.CreatedAt, v.UpdatedAt, v.ExpiresAt, v.LastCheckedAt, v.NextCheckAt, v.CheckCount)
+	if err != nil {
+		return domain.TestPayment{}, false, false, 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return domain.TestPayment{}, false, false, 0, err
+	}
+	stored, err := scanTestPayment(tx.QueryRowContext(ctx, testPaymentColumns+` WHERE tenant_id=$1 AND idempotency_key=$2 AND request_source='tenant_api'`, v.TenantID, v.IdempotencyKey))
+	if err != nil {
+		return domain.TestPayment{}, false, false, 0, err
+	}
+	if stored.Amount != v.Amount || stored.QRISTemplateID != v.QRISTemplateID || stored.ExpiresAt.Sub(stored.CreatedAt) != v.ExpiresAt.Sub(v.CreatedAt) {
+		return domain.TestPayment{}, false, false, 0, store.ErrConflict
+	}
+	if err = tx.Commit(); err != nil {
+		return domain.TestPayment{}, false, false, 0, err
+	}
+	return stored, n == 1, true, 0, nil
+}
+
+const testPaymentColumns = `SELECT id,COALESCE(idempotency_key,''),qris_template_id,COALESCE(merchant_id,''),COALESCE(tenant_id,''),amount,dynamic_payload,unique_code,status,request_source,match_confidence,COALESCE(matched_transaction_id,''),created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count FROM test_payments`
 
 func scanTestPayment(s interface{ Scan(...any) error }) (domain.TestPayment, error) {
 	var v domain.TestPayment
-	err := s.Scan(&v.ID, &v.QRISTemplateID, &v.MerchantID, &v.TenantID, &v.Amount, &v.DynamicPayload, &v.UniqueCode, &v.Status, &v.RequestSource, &v.MatchConfidence, &v.MatchedTransactionID, &v.CreatedAt, &v.UpdatedAt, &v.ExpiresAt, &v.LastCheckedAt, &v.NextCheckAt, &v.CheckCount)
+	err := s.Scan(&v.ID, &v.IdempotencyKey, &v.QRISTemplateID, &v.MerchantID, &v.TenantID, &v.Amount, &v.DynamicPayload, &v.UniqueCode, &v.Status, &v.RequestSource, &v.MatchConfidence, &v.MatchedTransactionID, &v.CreatedAt, &v.UpdatedAt, &v.ExpiresAt, &v.LastCheckedAt, &v.NextCheckAt, &v.CheckCount)
 	return v, err
 }
 func (r *Repository) TestPayment(ctx context.Context, id string) (domain.TestPayment, error) {
 	v, err := scanTestPayment(r.DB.QueryRowContext(ctx, testPaymentColumns+` WHERE id=$1`, id))
 	return v, notFound(err)
 }
+func (r *Repository) TestPaymentForTenant(ctx context.Context, tenantID, id string) (domain.TestPayment, error) {
+	v, err := scanTestPayment(r.DB.QueryRowContext(ctx, testPaymentColumns+` WHERE tenant_id=$1 AND id=$2 AND request_source='tenant_api'`, tenantID, id))
+	return v, notFound(err)
+}
 func (r *Repository) UpdatePendingTestPayment(ctx context.Context, v domain.TestPayment) (bool, error) {
-	res, err := r.DB.ExecContext(ctx, `UPDATE test_payments SET status=$1,match_confidence=$2,matched_transaction_id=NULLIF($3,''),updated_at=$4,last_checked_at=$5,next_check_at=$6,check_count=$7 WHERE id=$8 AND status='pending'`, v.Status, v.MatchConfidence, v.MatchedTransactionID, v.UpdatedAt, v.LastCheckedAt, v.NextCheckAt, v.CheckCount, v.ID)
+	res, err := r.DB.ExecContext(ctx, `UPDATE test_payments SET status=$1,match_confidence=$2,matched_transaction_id=NULLIF($3,''),updated_at=$4,last_checked_at=$5,next_check_at=$6,check_count=$7 WHERE id=$8 AND status='pending' AND check_count=$9`, v.Status, v.MatchConfidence, v.MatchedTransactionID, v.UpdatedAt, v.LastCheckedAt, v.NextCheckAt, v.CheckCount, v.ID, v.CheckCount-1)
 	if err != nil {
 		return false, err
 	}
 	n, _ := res.RowsAffected()
 	return n == 1, nil
+}
+
+func (r *Repository) MatchPendingTestPayment(ctx context.Context, v domain.TestPayment, transaction domain.PortalTransaction) (bool, error) {
+	tx, err := r.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE test_payments SET status=$1,match_confidence=$2,matched_transaction_id=$3,updated_at=$4,last_checked_at=$5,next_check_at=$6,check_count=$7 WHERE id=$8 AND status='pending' AND check_count=$9`, v.Status, v.MatchConfidence, v.MatchedTransactionID, v.UpdatedAt, v.LastCheckedAt, v.NextCheckAt, v.CheckCount, v.ID, v.CheckCount-1)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "test_payments_matched_transaction_unique" {
+			return false, nil
+		}
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n != 1 {
+		return false, err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO portal_transactions(id,merchant_id,tenant_id,reference,amount,status,paid_at,source,match_confidence,invoice_id,created_at) VALUES($1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,$9,NULLIF($10,''),$11) ON CONFLICT(merchant_id,reference) DO UPDATE SET amount=EXCLUDED.amount,status=EXCLUDED.status,paid_at=EXCLUDED.paid_at,source=EXCLUDED.source,tenant_id=COALESCE(portal_transactions.tenant_id,EXCLUDED.tenant_id),invoice_id=COALESCE(portal_transactions.invoice_id,EXCLUDED.invoice_id),match_confidence=CASE WHEN portal_transactions.tenant_id IS NULL THEN EXCLUDED.match_confidence ELSE portal_transactions.match_confidence END`, transaction.ID, transaction.MerchantID, transaction.TenantID, transaction.Reference, transaction.Amount, transaction.Status, transaction.PaidAt, transaction.Source, transaction.MatchConfidence, transaction.InvoiceID, transaction.CreatedAt)
+	if err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 func (r *Repository) PendingTestPayments(ctx context.Context, due time.Time, limit int) ([]domain.TestPayment, error) {
 	rows, err := r.DB.QueryContext(ctx, testPaymentColumns+` WHERE status='pending' AND next_check_at IS NOT NULL AND next_check_at <= $1 ORDER BY next_check_at,created_at LIMIT $2`, due, limit)
@@ -367,6 +460,22 @@ func (r *Repository) ExpirePendingTestPayments(ctx context.Context, now time.Tim
 }
 func (r *Repository) ListTestPayments(ctx context.Context, limit int) ([]domain.TestPayment, error) {
 	rows, err := r.DB.QueryContext(ctx, testPaymentColumns+` ORDER BY created_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.TestPayment, 0)
+	for rows.Next() {
+		v, scanErr := scanTestPayment(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+func (r *Repository) ListTenantTestPayments(ctx context.Context, tenantID string, limit int) ([]domain.TestPayment, error) {
+	rows, err := r.DB.QueryContext(ctx, testPaymentColumns+` WHERE tenant_id=$1 AND request_source='tenant_api' ORDER BY created_at DESC LIMIT $2`, tenantID, limit)
 	if err != nil {
 		return nil, err
 	}

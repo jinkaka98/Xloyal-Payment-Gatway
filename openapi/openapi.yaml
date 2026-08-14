@@ -46,15 +46,37 @@
       "get": {
         "tags": ["Public"], "operationId": "listTenantTransactions", "security": [{"ApiKey": []}],
         "parameters": [{"$ref": "#/components/parameters/TenantId"}, {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}],
-        "responses": {"200": {"description": "Matched portal transactions for this tenant", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/PortalTransaction"}}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
+        "responses": {"200": {"description": "Tenant QRIS requests and matched portal transactions", "content": {"application/json": {"schema": {"type": "array", "items": {"oneOf": [{"$ref": "#/components/schemas/PortalTransaction"}, {"$ref": "#/components/schemas/TenantQRISTransactionLog"}]}}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/v1/tenants/{tenant_id}/transactions/qris": {
+      "post": {
+        "tags": ["Public"], "operationId": "createTenantQRISTransaction", "security": [{"ApiKey": []}],
+        "parameters": [{"$ref": "#/components/parameters/TenantId"}, {"name": "Idempotency-Key", "in": "header", "required": false, "schema": {"type": "string", "maxLength": 200}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateTenantQRIS"}}}},
+        "responses": {"201": {"description": "QRIS transaction created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "200": {"description": "Existing idempotent QRIS transaction", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/v1/tenants/{tenant_id}/transactions/qris/{transaction_id}": {
+      "get": {
+        "tags": ["Public"], "operationId": "getTenantQRISTransaction", "security": [{"ApiKey": []}],
+        "parameters": [{"$ref": "#/components/parameters/TenantId"}, {"name": "transaction_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "QRIS transaction status", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/v1/tenants/{tenant_id}/transactions/qris/{transaction_id}/qr": {
+      "get": {
+        "tags": ["Public"], "operationId": "tenantQRISTransactionImage", "security": [{"ApiKey": []}],
+        "parameters": [{"$ref": "#/components/parameters/TenantId"}, {"name": "transaction_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "QR code PNG", "content": {"image/png": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
       }
     },
     "/v1/tenants/{tenant_id}/qris/dynamic": {
       "post": {
         "tags": ["Public"], "operationId": "createTenantDynamicQRIS", "security": [{"ApiKey": []}],
-        "parameters": [{"$ref": "#/components/parameters/TenantId"}],
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["template_id", "amount"], "properties": {"template_id": {"type": "string"}, "amount": {"type": "integer", "format": "int64", "minimum": 1, "maximum": 100000000}}}}}},
-        "responses": {"201": {"description": "Dynamic QRIS payload and PNG", "content": {"application/json": {"schema": {"type": "object", "required": ["tenant_id", "template_id", "amount", "currency", "qr_payload", "qr_png_base64", "created_at"], "properties": {"tenant_id": {"type": "string"}, "template_id": {"type": "string"}, "amount": {"type": "integer", "format": "int64"}, "currency": {"const": "IDR"}, "qr_payload": {"type": "string"}, "qr_png_base64": {"type": "string", "contentEncoding": "base64"}, "created_at": {"type": "string", "format": "date-time"}}}}}}, "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/Problem"}}
+        "parameters": [{"$ref": "#/components/parameters/TenantId"}, {"name": "Idempotency-Key", "in": "header", "required": false, "schema": {"type": "string", "maxLength": 200}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateTenantQRIS"}}}},
+        "responses": {"201": {"description": "QRIS transaction created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "200": {"description": "Existing idempotent QRIS transaction", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/Problem"}}
       }
     },
     "/v1/invoices/{invoice_id}": {
@@ -332,6 +354,33 @@
           "last_checked_at": {"type": ["string", "null"], "format": "date-time"}, "check_count": {"type": "integer", "minimum": 0}
         }
       },
+      "CreateTenantQRIS": {
+        "type": "object", "additionalProperties": false, "required": ["template_id", "amount"],
+        "properties": {
+          "template_id": {"type": "string"}, "amount": {"type": "integer", "format": "int64", "minimum": 1, "maximum": 100000000},
+          "idempotency_key": {"type": "string", "maxLength": 200}, "expires_in_seconds": {"type": "integer", "minimum": 60, "maximum": 1800, "default": 1800}
+        }
+      },
+      "TenantQRISTransaction": {
+        "type": "object", "required": ["id", "idempotency_key", "qris_template_id", "merchant_id", "tenant_id", "amount", "dynamic_payload", "unique_code", "status", "request_source", "match_confidence", "created_at", "updated_at", "expires_at", "check_count", "qr_payload", "qr_png_base64", "status_url", "qr_url"],
+        "properties": {
+          "id": {"type": "string"}, "idempotency_key": {"type": "string"}, "qris_template_id": {"type": "string"}, "merchant_id": {"type": "string"}, "tenant_id": {"type": "string"},
+          "amount": {"type": "integer", "format": "int64"}, "dynamic_payload": {"type": "string"}, "unique_code": {"type": "string"},
+          "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]}, "request_source": {"const": "tenant_api"}, "match_confidence": {"type": "string"},
+          "matched_transaction_id": {"type": "string"}, "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
+          "last_checked_at": {"type": ["string", "null"], "format": "date-time"}, "next_check_at": {"type": ["string", "null"], "format": "date-time"}, "check_count": {"type": "integer", "minimum": 0},
+          "qr_payload": {"type": "string"}, "qr_png_base64": {"type": "string", "contentEncoding": "base64"}, "status_url": {"type": "string"}, "qr_url": {"type": "string"}
+        }
+      },
+      "TenantQRISTransactionLog": {
+        "type": "object", "required": ["id", "tenant_id", "merchant_id", "reference", "amount", "status", "source", "request_source", "match_confidence", "created_at", "expires_at", "check_count"],
+        "properties": {
+          "id": {"type": "string"}, "tenant_id": {"type": "string"}, "merchant_id": {"type": "string"}, "reference": {"type": "string"}, "amount": {"type": "integer", "format": "int64"},
+          "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]}, "source": {"const": "tenant_qris"}, "request_source": {"const": "tenant_api"}, "match_confidence": {"type": "string"},
+          "created_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"}, "last_checked_at": {"type": ["string", "null"], "format": "date-time"},
+          "next_check_at": {"type": ["string", "null"], "format": "date-time"}, "check_count": {"type": "integer", "minimum": 0}, "matched_transaction_id": {"type": "string"}
+        }
+      },
       "QRISTemplate": {
         "type": "object", "required": ["id", "name", "image_mime", "merchant_name", "merchant_city", "access_scope", "static_to_dynamic", "max_requests_per_minute", "active", "created_at"],
         "properties": {
@@ -342,8 +391,8 @@
       "TestPayment": {
         "type": "object", "required": ["id", "qris_template_id", "merchant_id", "amount", "dynamic_payload", "status", "request_source", "match_confidence", "created_at", "updated_at", "expires_at", "check_count"],
         "properties": {
-          "id": {"type": "string"}, "qris_template_id": {"type": "string"}, "merchant_id": {"type": "string"}, "tenant_id": {"type": "string"}, "amount": {"type": "integer", "format": "int64"},
-          "dynamic_payload": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]},
+          "id": {"type": "string"}, "idempotency_key": {"type": "string"}, "qris_template_id": {"type": "string"}, "merchant_id": {"type": "string"}, "tenant_id": {"type": "string"}, "amount": {"type": "integer", "format": "int64"},
+          "dynamic_payload": {"type": "string"}, "unique_code": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]},
           "request_source": {"type": "string"}, "match_confidence": {"type": "string"}, "matched_transaction_id": {"type": "string"},
           "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
           "last_checked_at": {"type": ["string", "null"], "format": "date-time"}, "check_count": {"type": "integer", "minimum": 0}

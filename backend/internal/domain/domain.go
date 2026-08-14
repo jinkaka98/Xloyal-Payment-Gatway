@@ -145,6 +145,7 @@ type QRISTemplate struct {
 
 type TestPayment struct {
 	ID                   string        `json:"id"`
+	IdempotencyKey       string        `json:"idempotency_key,omitempty"`
 	QRISTemplateID       string        `json:"qris_template_id"`
 	MerchantID           string        `json:"merchant_id,omitempty"`
 	TenantID             string        `json:"tenant_id,omitempty"`

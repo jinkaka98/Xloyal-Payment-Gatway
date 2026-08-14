@@ -45,6 +45,9 @@ func (s Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/tenants/{tenant_id}/invoices", s.public(s.createInvoice))
 	m.HandleFunc("POST /v1/tenants/{tenant_id}/transactions/refresh", s.public(s.refreshTenantTransactions))
 	m.HandleFunc("GET /v1/tenants/{tenant_id}/transactions", s.public(s.listTenantTransactions))
+	m.HandleFunc("POST /v1/tenants/{tenant_id}/transactions/qris", s.public(s.createTenantQRISTransaction))
+	m.HandleFunc("GET /v1/tenants/{tenant_id}/transactions/qris/{transaction_id}", s.public(s.getTenantQRISTransaction))
+	m.HandleFunc("GET /v1/tenants/{tenant_id}/transactions/qris/{transaction_id}/qr", s.public(s.getTenantQRISTransactionQR))
 	m.HandleFunc("POST /v1/tenants/{tenant_id}/qris/dynamic", s.public(s.createTenantDynamicQRIS))
 	m.HandleFunc("GET /v1/invoices/{invoice_id}", s.public(s.getInvoice))
 	m.HandleFunc("POST /v1/invoices/{invoice_id}/check", s.public(s.checkInvoice))
@@ -501,12 +504,73 @@ func (s Server) listTenantTransactions(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 	transactions, err := s.Repo.ListPortalTransactions(r.Context(), tenant.MerchantID, tenant.ID, limit)
-	respond(w, transactions, err)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	payments, err := s.Repo.ListTenantTestPayments(r.Context(), tenant.ID, limit)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	type transactionItem struct {
+		value   any
+		eventAt time.Time
+	}
+	merged := make([]transactionItem, 0, len(transactions)+len(payments))
+	for _, transaction := range transactions {
+		merged = append(merged, transactionItem{value: transaction, eventAt: transaction.PaidAt})
+	}
+	for _, payment := range payments {
+		merged = append(merged, transactionItem{value: tenantPaymentLog(payment), eventAt: payment.CreatedAt})
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].eventAt.After(merged[j].eventAt) })
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	items := make([]any, 0, len(merged))
+	for _, item := range merged {
+		items = append(items, item.value)
+	}
+	respond(w, items, nil)
 }
+
+type tenantQRISResponse struct {
+	domain.TestPayment
+	TemplateID  string `json:"template_id"`
+	Currency    string `json:"currency"`
+	QRPayload   string `json:"qr_payload,omitempty"`
+	QRPNGBase64 string `json:"qr_png_base64,omitempty"`
+	StatusURL   string `json:"status_url"`
+	QRURL       string `json:"qr_url"`
+}
+
+func tenantPaymentLog(payment domain.TestPayment) map[string]any {
+	return map[string]any{
+		"id": payment.ID, "tenant_id": payment.TenantID, "merchant_id": payment.MerchantID,
+		"reference": payment.UniqueCode, "amount": payment.Amount, "status": payment.Status,
+		"source": "tenant_qris", "request_source": payment.RequestSource,
+		"match_confidence": payment.MatchConfidence, "created_at": payment.CreatedAt,
+		"expires_at": payment.ExpiresAt, "last_checked_at": payment.LastCheckedAt,
+		"next_check_at": payment.NextCheckAt, "check_count": payment.CheckCount,
+		"matched_transaction_id": payment.MatchedTransactionID,
+	}
+}
+
+func (s Server) createTenantQRISTransaction(w http.ResponseWriter, r *http.Request, tenant domain.Tenant) {
+	s.createTenantQRIS(w, r, tenant)
+}
+
 func (s Server) createTenantDynamicQRIS(w http.ResponseWriter, r *http.Request, tenant domain.Tenant) {
+	s.createTenantQRIS(w, r, tenant)
+}
+
+func (s Server) createTenantQRIS(w http.ResponseWriter, r *http.Request, tenant domain.Tenant) {
 	var in struct {
-		TemplateID string `json:"template_id"`
-		Amount     int64  `json:"amount"`
+		TemplateID       string `json:"template_id"`
+		Amount           int64  `json:"amount"`
+		IdempotencyKey   string `json:"idempotency_key"`
+		ExpiresInSeconds int    `json:"expires_in_seconds"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -527,6 +591,10 @@ func (s Server) createTenantDynamicQRIS(w http.ResponseWriter, r *http.Request, 
 		problem(w, http.StatusConflict, "QRIS template is not enabled for dynamic tenant requests")
 		return
 	}
+	if tenant.MerchantID == "" {
+		problem(w, http.StatusConflict, "tenant is not linked to a Merchant ID")
+		return
+	}
 	payload, err := qrisservice.Convert(template.StaticPayload, in.Amount)
 	if err != nil {
 		problem(w, http.StatusBadRequest, err.Error())
@@ -537,14 +605,10 @@ func (s Server) createTenantDynamicQRIS(w http.ResponseWriter, r *http.Request, 
 	if maxRequests < 1 {
 		maxRequests = 60
 	}
-	allowed, retryAfter, err := s.Repo.AllowQRISRequest(r.Context(), template.ID, tenant.ID, now, maxRequests)
+	uniqueCode := newUniqueCode()
+	payload, err = qrisservice.WithBillNumber(payload, uniqueCode)
 	if err != nil {
-		problem(w, http.StatusInternalServerError, "QRIS rate limit check failed")
-		return
-	}
-	if !allowed {
-		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-		problem(w, http.StatusTooManyRequests, "QRIS request limit exceeded")
+		problem(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	png, err := qrisservice.PNG(payload)
@@ -552,8 +616,103 @@ func (s Server) createTenantDynamicQRIS(w http.ResponseWriter, r *http.Request, 
 		problem(w, http.StatusInternalServerError, "QRIS image generation failed")
 		return
 	}
-	s.Repo.AppendAudit(r.Context(), domain.AuditEvent{ID: newID(), TenantID: tenant.ID, Actor: "tenant_api", Action: "qris.dynamic_generated", ResourceType: "qris_template", ResourceID: template.ID, Metadata: map[string]any{"amount": in.Amount}, CreatedAt: now})
-	write(w, http.StatusCreated, map[string]any{"tenant_id": tenant.ID, "template_id": template.ID, "amount": in.Amount, "currency": "IDR", "qr_payload": payload, "qr_png_base64": base64.StdEncoding.EncodeToString(png), "created_at": now})
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if key == "" {
+		key = strings.TrimSpace(in.IdempotencyKey)
+	}
+	if key == "" {
+		key = newID()
+	}
+	if len(key) > 200 {
+		problem(w, http.StatusBadRequest, "idempotency key is too long")
+		return
+	}
+	expiresIn := 30 * 60
+	if in.ExpiresInSeconds != 0 {
+		if in.ExpiresInSeconds < 60 || in.ExpiresInSeconds > 30*60 {
+			problem(w, http.StatusBadRequest, "expires_in_seconds must be between 60 and 1800")
+			return
+		}
+		expiresIn = in.ExpiresInSeconds
+	}
+	payment := domain.TestPayment{
+		ID: newID(), IdempotencyKey: key, QRISTemplateID: template.ID, MerchantID: tenant.MerchantID, TenantID: tenant.ID,
+		Amount: in.Amount, DynamicPayload: payload, UniqueCode: uniqueCode, Status: domain.InvoicePending,
+		RequestSource: "tenant_api", MatchConfidence: "waiting_first_check", CreatedAt: now, UpdatedAt: now,
+		ExpiresAt: now.Add(time.Duration(expiresIn) * time.Second),
+	}
+	next := now.Add(15 * time.Second)
+	payment.NextCheckAt = &next
+	stored, created, allowed, retryAfter, err := s.Repo.CreateTenantTestPayment(r.Context(), payment, now, maxRequests)
+	if errors.Is(err, store.ErrConflict) {
+		problem(w, http.StatusConflict, "idempotency key was reused with different transaction data")
+		return
+	}
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "save QRIS transaction failed")
+		return
+	}
+	if !allowed {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		problem(w, http.StatusTooManyRequests, "QRIS request limit exceeded")
+		return
+	}
+	png, err = qrisservice.PNG(stored.DynamicPayload)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "QRIS image generation failed")
+		return
+	}
+	if created {
+		s.Repo.AppendAudit(r.Context(), domain.AuditEvent{ID: newID(), TenantID: tenant.ID, Actor: "tenant_api", Action: "qris.transaction_created", ResourceType: "test_payment", ResourceID: stored.ID, Metadata: map[string]any{"amount": stored.Amount}, CreatedAt: now})
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	write(w, status, tenantQRISResponse{TestPayment: stored, TemplateID: stored.QRISTemplateID, Currency: "IDR", QRPayload: stored.DynamicPayload, QRPNGBase64: base64.StdEncoding.EncodeToString(png), StatusURL: "/v1/tenants/" + tenant.ID + "/transactions/qris/" + stored.ID, QRURL: "/v1/tenants/" + tenant.ID + "/transactions/qris/" + stored.ID + "/qr"})
+}
+
+func (s Server) getTenantQRISTransaction(w http.ResponseWriter, r *http.Request, tenant domain.Tenant) {
+	_, _ = s.Repo.ExpirePendingTestPayments(r.Context(), time.Now().UTC())
+	payment, err := s.Repo.TestPaymentForTenant(r.Context(), tenant.ID, r.PathValue("transaction_id"))
+	if err != nil {
+		notFound(w, err)
+		return
+	}
+	response := tenantQRISResponse{TestPayment: payment, TemplateID: payment.QRISTemplateID, Currency: "IDR", StatusURL: r.URL.Path, QRURL: r.URL.Path + "/qr"}
+	if payment.Status == domain.InvoicePending {
+		png, pngErr := qrisservice.PNG(payment.DynamicPayload)
+		if pngErr != nil {
+			problem(w, http.StatusInternalServerError, "QRIS image generation failed")
+			return
+		}
+		response.QRPayload = payment.DynamicPayload
+		response.QRPNGBase64 = base64.StdEncoding.EncodeToString(png)
+	} else {
+		response.DynamicPayload = ""
+	}
+	write(w, http.StatusOK, response)
+}
+
+func (s Server) getTenantQRISTransactionQR(w http.ResponseWriter, r *http.Request, tenant domain.Tenant) {
+	_, _ = s.Repo.ExpirePendingTestPayments(r.Context(), time.Now().UTC())
+	payment, err := s.Repo.TestPaymentForTenant(r.Context(), tenant.ID, r.PathValue("transaction_id"))
+	if err != nil {
+		notFound(w, err)
+		return
+	}
+	if payment.Status != domain.InvoicePending {
+		problem(w, http.StatusGone, "QRIS transaction is no longer payable")
+		return
+	}
+	png, err := qrisservice.PNG(payment.DynamicPayload)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "QRIS image generation failed")
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(png)
 }
 func (s Server) getTariff(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
 	v, err := s.Repo.Tariff(r.Context(), r.PathValue("id"))
