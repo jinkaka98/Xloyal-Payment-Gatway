@@ -53,6 +53,7 @@ type Tenant struct {
 	SiteURL           string    `json:"site_url,omitempty"`
 	CallbackURL       string    `json:"callback_url,omitempty"`
 	WebhookURL        string    `json:"webhook_url,omitempty"`
+	SandboxMode       bool      `json:"sandbox_mode"`
 	APIKeyHash        string    `json:"-"`
 	APIKeyCiphertext  string    `json:"-"`
 	APIKeyRecoverable bool      `json:"api_key_recoverable"`

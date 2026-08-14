@@ -94,6 +94,61 @@ func TestAPIAuthIsolationIdempotencyAndQR(t *testing.T) {
 		t.Fatalf("cross tenant code %d", w.Code)
 	}
 }
+
+func TestTenantAPIOriginPolicy(t *testing.T) {
+	repo := store.NewMemory()
+	ctx := context.Background()
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-production", SiteURL: "https://Shop.Example:443/account", APIKeyHash: security.HashSecret("production-key"), Active: true})
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-http", SiteURL: "http://LOCALHOST:80/app", APIKeyHash: security.HashSecret("http-key"), Active: true})
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-sandbox", SiteURL: "https://sandbox.example", SandboxMode: true, APIKeyHash: security.HashSecret("sandbox-key"), Active: true})
+	h := Server{Repo: repo}.Handler()
+
+	tests := []struct {
+		name        string
+		tenantID    string
+		key         string
+		origin      string
+		wantCode    int
+		allowOrigin string
+	}{
+		{name: "production matching origin", tenantID: "tenant-production", key: "production-key", origin: "https://shop.example", wantCode: http.StatusOK, allowOrigin: "https://shop.example"},
+		{name: "production HTTP default port", tenantID: "tenant-http", key: "http-key", origin: "http://localhost", wantCode: http.StatusOK, allowOrigin: "http://localhost"},
+		{name: "production foreign origin", tenantID: "tenant-production", key: "production-key", origin: "https://foreign.example", wantCode: http.StatusForbidden},
+		{name: "sandbox foreign origin", tenantID: "tenant-sandbox", key: "sandbox-key", origin: "http://localhost:3000", wantCode: http.StatusOK, allowOrigin: "http://localhost:3000"},
+		{name: "server request without origin", tenantID: "tenant-production", key: "production-key", wantCode: http.StatusOK},
+		{name: "sandbox invalid API key", tenantID: "tenant-sandbox", key: "wrong-key", origin: "http://localhost:3000", wantCode: http.StatusUnauthorized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/v1/tenants/"+tt.tenantID+"/transactions", nil)
+			req.Header.Set("X-API-Key", tt.key)
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
+			}
+			h.ServeHTTP(w, req)
+			if w.Code != tt.wantCode {
+				t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+			}
+			if got := w.Header().Get("Access-Control-Allow-Origin"); got != tt.allowOrigin {
+				t.Fatalf("allow origin=%q want=%q", got, tt.allowOrigin)
+			}
+			if tt.origin != "" && !strings.Contains(w.Header().Get("Vary"), "Origin") {
+				t.Fatalf("Vary=%q", w.Header().Get("Vary"))
+			}
+		})
+	}
+
+	preflight := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/v1/tenants/tenant-sandbox/transactions/qris", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "X-API-Key, Idempotency-Key, Content-Type")
+	h.ServeHTTP(preflight, req)
+	if preflight.Code != http.StatusNoContent || preflight.Header().Get("Access-Control-Allow-Origin") != "http://localhost:5173" || preflight.Header().Get("Access-Control-Allow-Methods") != "GET, POST, OPTIONS" || preflight.Header().Get("Access-Control-Allow-Headers") != "Content-Type, X-API-Key, Idempotency-Key" {
+		t.Fatalf("preflight code=%d headers=%v body=%s", preflight.Code, preflight.Header(), preflight.Body.String())
+	}
+}
 func TestAdminRBAC(t *testing.T) {
 	r := store.NewMemory()
 	c, _ := security.NewCipher(bytes.Repeat([]byte{1}, 32))
@@ -236,7 +291,7 @@ func TestCreateTenantGeneratesCredentialsAndPersistsConnectivity(t *testing.T) {
 	repo.CreateMerchantID(context.Background(), domain.MerchantID{ID: "interactive-browser", Name: "InterActive QRIS browser", Active: true})
 	h := Server{Repo: repo, Cipher: cipher, AdminTokens: map[string]string{"admin": "super_admin"}}.Handler()
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/admin/tenants", strings.NewReader(`{"name":"Website utama","merchant_id":"interactive-browser","site_url":"https://shop.example","callback_url":"https://shop.example/qris/callback","webhook_url":"https://shop.example/webhooks/qris"}`))
+	req := httptest.NewRequest(http.MethodPost, "/admin/tenants", strings.NewReader(`{"name":"Website utama","merchant_id":"interactive-browser","site_url":"https://shop.example","callback_url":"https://shop.example/qris/callback","webhook_url":"https://shop.example/webhooks/qris","sandbox_mode":true}`))
 	req.Header.Set("Authorization", "Bearer admin")
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusCreated {
@@ -253,7 +308,7 @@ func TestCreateTenantGeneratesCredentialsAndPersistsConnectivity(t *testing.T) {
 	if !strings.HasPrefix(response.Tenant.ID, "tenant_") || !strings.HasPrefix(response.APIKey, "xl_live_") || !response.APIKeyVisibleOnce {
 		t.Fatalf("generated response=%+v", response)
 	}
-	if response.Tenant.MerchantID != "interactive-browser" || response.Tenant.SiteURL != "https://shop.example" || response.Tenant.CallbackURL == "" || response.Tenant.WebhookURL == "" {
+	if response.Tenant.MerchantID != "interactive-browser" || response.Tenant.SiteURL != "https://shop.example" || response.Tenant.CallbackURL == "" || response.Tenant.WebhookURL == "" || !response.Tenant.SandboxMode {
 		t.Fatalf("tenant=%+v", response.Tenant)
 	}
 	authenticated, err := repo.TenantByAPIKey(context.Background(), security.HashSecret(response.APIKey))
@@ -375,14 +430,14 @@ func TestUpdateTenantKeepsAPIKeyAndChangesConnectivity(t *testing.T) {
 	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", MerchantID: "merchant-a", Name: "Old", APIKeyHash: security.HashSecret("tenant-key"), APIKeyCiphertext: "encrypted-key", Active: true, CreatedAt: time.Now().UTC()})
 	h := Server{Repo: repo, AdminTokens: map[string]string{"admin": "super_admin"}}.Handler()
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/admin/tenants/tenant-a", strings.NewReader(`{"name":"Updated tenant","merchant_id":"merchant-b","site_url":"https://new.example","callback_url":"","webhook_url":"https://new.example/qris","active":false}`))
+	req := httptest.NewRequest(http.MethodPut, "/admin/tenants/tenant-a", strings.NewReader(`{"name":"Updated tenant","merchant_id":"merchant-b","site_url":"https://new.example","callback_url":"","webhook_url":"https://new.example/qris","sandbox_mode":true,"active":false}`))
 	req.Header.Set("Authorization", "Bearer admin")
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"merchant_id":"merchant-b"`) || !strings.Contains(w.Body.String(), `"active":false`) {
 		t.Fatalf("update code=%d body=%s", w.Code, w.Body.String())
 	}
 	stored, err := repo.Tenant(ctx, "tenant-a")
-	if err != nil || stored.Name != "Updated tenant" || stored.SiteURL != "https://new.example" || stored.APIKeyHash != security.HashSecret("tenant-key") || stored.APIKeyCiphertext != "encrypted-key" {
+	if err != nil || stored.Name != "Updated tenant" || stored.SiteURL != "https://new.example" || !stored.SandboxMode || stored.APIKeyHash != security.HashSecret("tenant-key") || stored.APIKeyCiphertext != "encrypted-key" {
 		t.Fatalf("stored=%+v err=%v", stored, err)
 	}
 }

@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS tenants (
     site_url TEXT,
     callback_url TEXT,
     webhook_url TEXT,
+    sandbox_mode BOOLEAN NOT NULL DEFAULT FALSE,
     api_key_hash TEXT NOT NULL UNIQUE,
     api_key_ciphertext TEXT,
     active BOOLEAN NOT NULL DEFAULT TRUE,

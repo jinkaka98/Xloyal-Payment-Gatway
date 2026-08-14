@@ -7,12 +7,16 @@ import { StatusBadge } from "@/components/status-badge";
 import { formatDate } from "@/lib/format";
 import type { MerchantID, Tenant } from "@/lib/types";
 
-type TenantAPI = { id: string; merchant_id?: string; name: string; site_url?: string; callback_url?: string; webhook_url?: string; active: boolean; api_key_recoverable?: boolean; created_at: string };
+type TenantAPI = { id: string; merchant_id?: string; name: string; site_url?: string; callback_url?: string; webhook_url?: string; sandbox_mode: boolean; active: boolean; api_key_recoverable?: boolean; created_at: string };
 type CreatedTenant = { tenant: TenantAPI; api_key: string; api_key_visible_once: boolean };
 type Modal = { kind: "create" } | { kind: "edit" | "docs"; tenant: Tenant } | null;
 
 function fromAPI(item: TenantAPI): Tenant {
-  return { id: item.id, name: item.name, merchantId: item.merchant_id ?? "", siteUrl: item.site_url ?? "", callbackUrl: item.callback_url ?? "", webhookUrl: item.webhook_url ?? "", active: item.active, apiKeyRecoverable: item.api_key_recoverable, createdAt: item.created_at };
+  return { id: item.id, name: item.name, merchantId: item.merchant_id ?? "", siteUrl: item.site_url ?? "", callbackUrl: item.callback_url ?? "", webhookUrl: item.webhook_url ?? "", sandboxMode: item.sandbox_mode, active: item.active, apiKeyRecoverable: item.api_key_recoverable, createdAt: item.created_at };
+}
+
+function tenantSiteOrigin(siteURL: string): string {
+  try { return new URL(siteURL).origin; } catch { return "Site tujuan"; }
 }
 
 export function TenantConsole({ initialTenants, merchants }: { initialTenants: Tenant[]; merchants: MerchantID[] }) {
@@ -31,7 +35,10 @@ export function TenantConsole({ initialTenants, merchants }: { initialTenants: T
     const form = new FormData(event.currentTarget);
     const input: Record<string, string | boolean> = Object.fromEntries(["name", "merchant_id", "site_url", "callback_url", "webhook_url"].map((key) => [key, String(form.get(key) ?? "").trim()]));
     const editing = modal?.kind === "edit" ? modal.tenant : null;
-    if (editing) input.active = form.get("active") === "on";
+    if (editing) {
+      input.active = form.get("active") === "on";
+      input.sandbox_mode = form.get("sandbox_mode") === "on";
+    }
     try {
       const response = await fetch(editing ? `/api/admin/tenants/${encodeURIComponent(editing.id)}` : "/api/admin/tenants", { method: editing ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
       const payload = await response.json().catch(() => ({}));
@@ -60,7 +67,7 @@ export function TenantConsole({ initialTenants, merchants }: { initialTenants: T
     <section className="section-block">
       <div className="section-heading"><div><span className="section-kicker">API directory</span><h2>Connected Tenant IDs</h2><p>{tenants.length} tenant terdaftar. Super admin dapat melihat kembali atau merotasi API key dari tombol edit.</p></div></div>
       <div className="table-scroll"><table><thead><tr><th>Tenant</th><th>Merchant connection</th><th>Site tujuan</th><th>Callback & webhook</th><th>Dibuat</th><th>Status</th><th>Action</th></tr></thead><tbody>
-        {tenants.map((tenant) => <tr key={tenant.id}><td><strong>{tenant.name}</strong><span className="cell-subtitle"><code>{tenant.id}</code></span></td><td><code>{tenant.merchantId || "Belum terhubung"}</code></td><td>{tenant.siteUrl ? <a className="table-link" href={tenant.siteUrl} target="_blank" rel="noreferrer">{new URL(tenant.siteUrl).host}</a> : "Belum diatur"}</td><td><strong>{tenant.callbackUrl ? "Callback aktif" : "Tanpa callback"}</strong><span className="cell-subtitle">{tenant.webhookUrl ? "Webhook aktif" : "Webhook belum diatur"}</span></td><td>{formatDate(tenant.createdAt)}</td><td><StatusBadge status={tenant.active ? "active" : "inactive"} /></td><td><div className="row-actions"><button className="icon-button table-action" title="Edit tenant" aria-label={`Edit ${tenant.name}`} onClick={() => setModal({ kind: "edit", tenant })}><Pencil size={16} /></button><button className="icon-button table-action" title="Dokumentasi API" aria-label={`Dokumentasi ${tenant.name}`} onClick={() => setModal({ kind: "docs", tenant })}><BookOpen size={16} /></button></div></td></tr>)}
+        {tenants.map((tenant) => <tr key={tenant.id}><td><strong>{tenant.name}</strong><span className="cell-subtitle"><code>{tenant.id}</code></span></td><td><code>{tenant.merchantId || "Belum terhubung"}</code></td><td>{tenant.siteUrl ? <a className="table-link" href={tenant.siteUrl} target="_blank" rel="noreferrer">{new URL(tenant.siteUrl).host}</a> : "Belum diatur"}</td><td><strong>{tenant.callbackUrl ? "Callback aktif" : "Tanpa callback"}</strong><span className="cell-subtitle">{tenant.webhookUrl ? "Webhook aktif" : "Webhook belum diatur"}</span></td><td>{formatDate(tenant.createdAt)}</td><td><StatusBadge status={tenant.active ? "active" : "inactive"} /><span className="cell-subtitle">{tenant.sandboxMode ? "Sandbox" : "Production"}</span></td><td><div className="row-actions"><button className="icon-button table-action" title="Edit tenant" aria-label={`Edit ${tenant.name}`} onClick={() => setModal({ kind: "edit", tenant })}><Pencil size={16} /></button><button className="icon-button table-action" title="Dokumentasi API" aria-label={`Dokumentasi ${tenant.name}`} onClick={() => setModal({ kind: "docs", tenant })}><BookOpen size={16} /></button></div></td></tr>)}
       </tbody></table></div>
     </section>
     {modal && <div className="tenant-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}><section className={`tenant-modal ${modal.kind === "docs" ? "tenant-docs-modal" : ""}`} role="dialog" aria-modal="true" aria-labelledby="tenant-dialog-title">
@@ -86,6 +93,7 @@ function TenantForm({ tenant, merchants, busy, error, onSubmit, onCancel, onCopy
     <label>Site tujuan<input name="site_url" type="url" placeholder="https://app.example.com" defaultValue={tenant?.siteUrl ?? ""} /></label>
     <label>Callback URL<input name="callback_url" type="url" placeholder="https://app.example.com/qris/callback" defaultValue={tenant?.callbackUrl ?? ""} /></label>
     <label>Webhook URL<input name="webhook_url" type="url" placeholder="https://app.example.com/webhooks/qris" defaultValue={tenant?.webhookUrl ?? ""} /></label>
+    {tenant && <label className="tenant-active-toggle"><input name="sandbox_mode" type="checkbox" aria-label="Sandbox mode" aria-describedby="tenant-sandbox-description" defaultChecked={tenant.sandboxMode} />Sandbox mode<span id="tenant-sandbox-description" className="cell-subtitle">Izinkan request browser dari origin mana pun. API key tetap wajib.</span></label>}
     {tenant && <label className="tenant-active-toggle"><input name="active" type="checkbox" defaultChecked={tenant.active} />Tenant dapat menggunakan API</label>}
     {error && <p className="form-error">{error}</p>}
     <div className="tenant-form-actions"><button type="button" className="button" onClick={onCancel}>Batal</button><button className="button button-primary" disabled={busy || merchants.length === 0}>{busy ? "Menyimpan..." : tenant ? "Simpan perubahan" : "Buat tenant & API key"}</button></div>
@@ -156,6 +164,7 @@ function TenantDocumentation({ tenant }: { tenant: Tenant }) {
     </div>
     <div className="tenant-api-routes"><KeyRound size={17} /><div><strong>Autentikasi Alpakyros LITE</strong><code>Tenant ID: {id}</code><code>X-API-Key: YOUR_API_KEY</code><p>Kirim key hanya ke <code>{apiBase}</code>. Portal merchant dan browser worker tetap berada di jaringan internal gateway.</p></div></div>
     <p>Gunakan header <code>X-API-Key: YOUR_API_KEY</code> pada setiap request. Tenant ID aktif untuk integrasi ini adalah <code>{id}</code>; API key dapat dilihat atau dirotasi oleh super admin dari tombol edit tenant.</p>
+    <div className="tenant-api-routes"><Server size={17} /><div><strong>Mode browser: {tenant.sandboxMode ? "Sandbox" : "Production"}</strong><p>{tenant.sandboxMode ? "Request browser boleh berasal dari origin mana pun, tetapi API key tetap wajib dan tetap diverifikasi." : <>Request browser hanya diterima dari origin <code>{tenantSiteOrigin(tenant.siteUrl)}</code>. Request server-to-server tanpa header Origin tetap diterima.</>}</p></div></div>
     <div className="tenant-doc-endpoint"><strong><span>POST</span>Buat transaksi QRIS dinamis</strong><code>{apiBase}/v1/tenants/{id}/transactions/qris</code><pre>{`curl -X POST '${apiBase}/v1/tenants/${id}/transactions/qris' \\\n  -H 'Content-Type: application/json' \\\n  -H 'X-API-Key: YOUR_API_KEY' \\\n  -d '{"template_id":"QRIS_TEMPLATE_ID","amount":50000,"idempotency_key":"ORDER_UNIQUE_ID"}'`}</pre><p>Respons menyertakan ID transaksi, payload QRIS, PNG base64, URL status, URL QR, status pending, dan waktu kedaluwarsa. Gunakan idempotency key unik per order.</p></div>
     <div className="tenant-doc-endpoint"><strong><span>GET</span>Status transaksi QRIS</strong><code>GET /v1/tenants/{id}/transactions/qris/{`{transaction_id}`}</code><code>{apiBase}/v1/tenants/{id}/transactions/qris/{`{transaction_id}`}</code><p>Polling endpoint ini untuk status <code>pending</code>, <code>paid</code>, atau <code>expired</code>.</p></div>
     <div className="tenant-doc-endpoint"><strong><span>GET</span>Gambar QR transaksi</strong><code>{apiBase}/v1/tenants/{id}/transactions/qris/{`{transaction_id}`}/qr</code><p>Mengembalikan PNG selama transaksi masih dapat dibayar.</p></div>

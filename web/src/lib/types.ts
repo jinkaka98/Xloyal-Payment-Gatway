@@ -9,6 +9,7 @@ export interface Tenant {
   siteUrl: string;
   callbackUrl: string;
   webhookUrl: string;
+  sandboxMode: boolean;
   active: boolean;
   apiKeyRecoverable?: boolean | undefined;
   createdAt: string;

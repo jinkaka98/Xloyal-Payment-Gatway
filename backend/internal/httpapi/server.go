@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -41,6 +42,7 @@ type Server struct {
 func (s Server) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /v1/health", s.health)
+	m.HandleFunc("OPTIONS /v1/{rest...}", tenantPreflight)
 	m.HandleFunc("POST /internal/github/webhook", s.githubWebhook)
 	m.HandleFunc("POST /v1/tenants/{tenant_id}/invoices", s.public(s.createInvoice))
 	m.HandleFunc("POST /v1/tenants/{tenant_id}/transactions/refresh", s.public(s.refreshTenantTransactions))
@@ -806,6 +808,10 @@ type handler func(http.ResponseWriter, *http.Request, domain.Tenant)
 
 func (s Server) public(next handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Add("Vary", "Origin")
+		}
 		key := r.Header.Get("X-API-Key")
 		if key == "" {
 			problem(w, 401, "missing API key")
@@ -821,8 +827,61 @@ func (s Server) public(next handler) http.HandlerFunc {
 			problem(w, 404, "not found")
 			return
 		}
+		if origin != "" {
+			parsedOrigin, ok := parseOrigin(origin)
+			if !ok || (!tenant.SandboxMode && parsedOrigin != integrationOrigin(tenant.SiteURL)) {
+				problem(w, http.StatusForbidden, "invalid origin")
+				return
+			}
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
 		next(w, r, tenant)
 	}
+}
+
+func tenantPreflight(w http.ResponseWriter, r *http.Request) {
+	origin := r.Header.Get("Origin")
+	w.Header().Add("Vary", "Origin")
+	if _, ok := parseOrigin(origin); !ok {
+		problem(w, http.StatusForbidden, "invalid origin")
+		return
+	}
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Idempotency-Key")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func parseOrigin(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return "", false
+	}
+	return canonicalOrigin(u), true
+}
+
+func integrationOrigin(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ""
+	}
+	return canonicalOrigin(u)
+}
+
+func canonicalOrigin(u *url.URL) string {
+	scheme := strings.ToLower(u.Scheme)
+	hostname := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		port = ""
+	}
+	host := hostname
+	if port != "" {
+		host = net.JoinHostPort(hostname, port)
+	} else if strings.Contains(hostname, ":") {
+		host = "[" + hostname + "]"
+	}
+	return scheme + "://" + host
 }
 func (s Server) admin(min string, next handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -937,6 +996,7 @@ func (s Server) createTenant(w http.ResponseWriter, r *http.Request, _ domain.Te
 		SiteURL     string `json:"site_url"`
 		CallbackURL string `json:"callback_url"`
 		WebhookURL  string `json:"webhook_url"`
+		SandboxMode bool   `json:"sandbox_mode"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -967,7 +1027,7 @@ func (s Server) createTenant(w http.ResponseWriter, r *http.Request, _ domain.Te
 		problem(w, http.StatusInternalServerError, "tenant credential encryption failed")
 		return
 	}
-	v := domain.Tenant{ID: "tenant_" + newID()[:16], MerchantID: merchant.ID, Name: in.Name, SiteURL: strings.TrimSpace(in.SiteURL), CallbackURL: strings.TrimSpace(in.CallbackURL), WebhookURL: strings.TrimSpace(in.WebhookURL), APIKeyHash: security.HashSecret(apiKey), APIKeyCiphertext: ciphertext, APIKeyRecoverable: true, Active: true, CreatedAt: time.Now().UTC()}
+	v := domain.Tenant{ID: "tenant_" + newID()[:16], MerchantID: merchant.ID, Name: in.Name, SiteURL: strings.TrimSpace(in.SiteURL), CallbackURL: strings.TrimSpace(in.CallbackURL), WebhookURL: strings.TrimSpace(in.WebhookURL), SandboxMode: in.SandboxMode, APIKeyHash: security.HashSecret(apiKey), APIKeyCiphertext: ciphertext, APIKeyRecoverable: true, Active: true, CreatedAt: time.Now().UTC()}
 	if err := s.Repo.CreateTenant(r.Context(), v); err != nil {
 		problem(w, 500, "create tenant failed")
 		return
@@ -988,6 +1048,7 @@ func (s Server) updateTenant(w http.ResponseWriter, r *http.Request, _ domain.Te
 		SiteURL     string `json:"site_url"`
 		CallbackURL string `json:"callback_url"`
 		WebhookURL  string `json:"webhook_url"`
+		SandboxMode bool   `json:"sandbox_mode"`
 		Active      bool   `json:"active"`
 	}
 	if !decode(w, r, &in) {
@@ -1009,7 +1070,7 @@ func (s Server) updateTenant(w http.ResponseWriter, r *http.Request, _ domain.Te
 			return
 		}
 	}
-	current.Name, current.MerchantID, current.SiteURL, current.CallbackURL, current.WebhookURL, current.Active = in.Name, merchant.ID, strings.TrimSpace(in.SiteURL), strings.TrimSpace(in.CallbackURL), strings.TrimSpace(in.WebhookURL), in.Active
+	current.Name, current.MerchantID, current.SiteURL, current.CallbackURL, current.WebhookURL, current.SandboxMode, current.Active = in.Name, merchant.ID, strings.TrimSpace(in.SiteURL), strings.TrimSpace(in.CallbackURL), strings.TrimSpace(in.WebhookURL), in.SandboxMode, in.Active
 	if err = s.Repo.UpdateTenant(r.Context(), current); err != nil {
 		problem(w, http.StatusInternalServerError, "update tenant failed")
 		return

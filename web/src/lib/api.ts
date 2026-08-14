@@ -41,6 +41,7 @@ interface ApiTenant {
   site_url?: string;
   callback_url?: string;
   webhook_url?: string;
+  sandbox_mode: boolean;
   active: boolean;
   api_key_recoverable?: boolean;
   created_at: string;
@@ -145,7 +146,7 @@ export const api = {
   async getTenants(): Promise<Tenant[]> {
     if (USE_MOCK) return [];
     const items = await request<ApiTenant[]>("/admin/tenants", []);
-    return items.map((item) => ({ id: item.id, name: item.name, merchantId: item.merchant_id ?? "", siteUrl: item.site_url ?? "", callbackUrl: item.callback_url ?? "", webhookUrl: item.webhook_url ?? "", active: item.active, apiKeyRecoverable: item.api_key_recoverable, createdAt: item.created_at }));
+    return items.map((item) => ({ id: item.id, name: item.name, merchantId: item.merchant_id ?? "", siteUrl: item.site_url ?? "", callbackUrl: item.callback_url ?? "", webhookUrl: item.webhook_url ?? "", sandboxMode: item.sandbox_mode, active: item.active, apiKeyRecoverable: item.api_key_recoverable, createdAt: item.created_at }));
   },
   async getMerchantAccounts(): Promise<MerchantAccount[]> {
     if (USE_MOCK) return [];

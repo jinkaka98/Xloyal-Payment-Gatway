@@ -10,6 +10,7 @@ const tenant = {
   siteUrl: "https://lite.alpakyros.net",
   callbackUrl: "",
   webhookUrl: "",
+  sandboxMode: false,
   active: true,
   createdAt: "2026-08-14T00:00:00Z",
 };
@@ -65,11 +66,42 @@ describe("TenantConsole credentials and documentation", () => {
   });
 
   it("documents the deployed Alpakyros QRIS routes with the selected tenant ID", () => {
-    render(<TenantConsole initialTenants={[tenant]} merchants={[]} />);
+    render(<TenantConsole initialTenants={[{ ...tenant, siteUrl: "https://lite.alpakyros.net/store" }]} merchants={[]} />);
     fireEvent.click(screen.getByRole("button", { name: "Dokumentasi Alpakyros LITE" }));
 
     expect(screen.getAllByText(/https:\/\/api\.alpakyros\.net\/v1\/tenants\/tenant_alpakyros_lite\/transactions\/qris/).length).toBeGreaterThan(0);
     expect(screen.getByText(/GET \/v1\/tenants\/tenant_alpakyros_lite\/transactions\/qris\/\{transaction_id\}/)).toBeInTheDocument();
     expect(screen.getAllByText(/X-API-Key/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Request browser hanya diterima dari origin/)).toHaveTextContent("https://lite.alpakyros.net");
+    expect(screen.getByText(/Request browser hanya diterima dari origin/)).not.toHaveTextContent("/store");
+  });
+
+  it("persists sandbox mode from edit and shows the updated state", async () => {
+    const merchant = { id: "merchant_qris", interactive_merchant_id: "00828", name: "QRIS", active: true, created_at: "2026-08-14T00:00:00Z" };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      id: tenant.id,
+      name: tenant.name,
+      merchant_id: tenant.merchantId,
+      site_url: tenant.siteUrl,
+      callback_url: "",
+      webhook_url: "",
+      sandbox_mode: true,
+      active: true,
+      created_at: tenant.createdAt,
+    }), { status: 200 }));
+    render(<TenantConsole initialTenants={[tenant]} merchants={[merchant]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Alpakyros LITE" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sandbox mode" }));
+    fireEvent.click(screen.getByRole("button", { name: "Simpan perubahan" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const request = fetchMock.mock.calls[0]?.[1];
+    expect(JSON.parse(String(request?.body))).toMatchObject({ sandbox_mode: true });
+    expect(await screen.findByText("Sandbox")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit Alpakyros LITE" }));
+    const sandboxToggle = screen.getByRole("checkbox", { name: "Sandbox mode" });
+    expect(sandboxToggle).toBeChecked();
+    expect(sandboxToggle).toHaveAccessibleDescription("Izinkan request browser dari origin mana pun. API key tetap wajib.");
   });
 });

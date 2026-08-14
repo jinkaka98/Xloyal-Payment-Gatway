@@ -3,13 +3,19 @@
   "info": {
     "title": "Xloyal Payment Gateway API",
     "version": "0.1.0",
-    "description": "Tenant-isolated QRIS invoice API and role-protected administration API."
+    "description": "Tenant-isolated QRIS invoice API and role-protected administration API. Browser calls require an Origin matching the tenant site_url unless sandbox_mode is enabled. API-key authentication remains mandatory in both modes; server-to-server calls without Origin are unaffected."
   },
   "servers": [{"url": "http://localhost:8080"}],
   "tags": [
     {"name": "Public"},
     {"name": "Admin"}
   ],
+  "x-tenant-cors": {
+    "preflight": "OPTIONS /v1/* returns 204 for a syntactically valid Origin; the authenticated request still enforces the tenant origin policy.",
+    "allowMethods": ["GET", "POST", "OPTIONS"],
+    "allowHeaders": ["Content-Type", "X-API-Key", "Idempotency-Key"],
+    "allowCredentials": false
+  },
   "paths": {
     "/v1/health": {
       "get": {
@@ -30,7 +36,7 @@
         "responses": {
           "201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Invoice"}}}},
           "200": {"description": "Existing idempotent invoice", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Invoice"}}}},
-          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"},
+          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/TenantOriginDenied"}, "404": {"$ref": "#/components/responses/Problem"},
           "409": {"$ref": "#/components/responses/Problem"}, "502": {"$ref": "#/components/responses/Problem"}
         }
       }
@@ -39,14 +45,14 @@
       "post": {
         "tags": ["Public"], "operationId": "refreshTenantTransactions", "security": [{"ApiKey": []}],
         "parameters": [{"$ref": "#/components/parameters/TenantId"}],
-        "responses": {"202": {"description": "Browser history refresh queued", "content": {"application/json": {"schema": {"type": "object", "required": ["status", "tenant_id", "merchant_id", "poll_url"], "properties": {"status": {"const": "queued"}, "tenant_id": {"type": "string"}, "merchant_id": {"type": "string"}, "poll_url": {"type": "string"}}}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}}
+        "responses": {"202": {"description": "Browser history refresh queued", "content": {"application/json": {"schema": {"type": "object", "required": ["status", "tenant_id", "merchant_id", "poll_url"], "properties": {"status": {"const": "queued"}, "tenant_id": {"type": "string"}, "merchant_id": {"type": "string"}, "poll_url": {"type": "string"}}}}}}, "401": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/TenantOriginDenied"}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}}
       }
     },
     "/v1/tenants/{tenant_id}/transactions": {
       "get": {
         "tags": ["Public"], "operationId": "listTenantTransactions", "security": [{"ApiKey": []}],
         "parameters": [{"$ref": "#/components/parameters/TenantId"}, {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}],
-        "responses": {"200": {"description": "Tenant QRIS requests and matched portal transactions", "content": {"application/json": {"schema": {"type": "array", "items": {"oneOf": [{"$ref": "#/components/schemas/PortalTransaction"}, {"$ref": "#/components/schemas/TenantQRISTransactionLog"}]}}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
+        "responses": {"200": {"description": "Tenant QRIS requests and matched portal transactions", "content": {"application/json": {"schema": {"type": "array", "items": {"oneOf": [{"$ref": "#/components/schemas/PortalTransaction"}, {"$ref": "#/components/schemas/TenantQRISTransactionLog"}]}}}}}, "401": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/TenantOriginDenied"}, "404": {"$ref": "#/components/responses/Problem"}}
       }
     },
     "/v1/tenants/{tenant_id}/transactions/qris": {
@@ -54,21 +60,21 @@
         "tags": ["Public"], "operationId": "createTenantQRISTransaction", "security": [{"ApiKey": []}],
         "parameters": [{"$ref": "#/components/parameters/TenantId"}, {"name": "Idempotency-Key", "in": "header", "required": false, "schema": {"type": "string", "maxLength": 200}}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateTenantQRIS"}}}},
-        "responses": {"201": {"description": "QRIS transaction created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "200": {"description": "Existing idempotent QRIS transaction", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/Problem"}}
+        "responses": {"201": {"description": "QRIS transaction created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "200": {"description": "Existing idempotent QRIS transaction", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/TenantOriginDenied"}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/Problem"}}
       }
     },
     "/v1/tenants/{tenant_id}/transactions/qris/{transaction_id}": {
       "get": {
         "tags": ["Public"], "operationId": "getTenantQRISTransaction", "security": [{"ApiKey": []}],
         "parameters": [{"$ref": "#/components/parameters/TenantId"}, {"name": "transaction_id", "in": "path", "required": true, "schema": {"type": "string"}}],
-        "responses": {"200": {"description": "QRIS transaction status", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
+        "responses": {"200": {"description": "QRIS transaction status", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/TenantOriginDenied"}, "404": {"$ref": "#/components/responses/Problem"}}
       }
     },
     "/v1/tenants/{tenant_id}/transactions/qris/{transaction_id}/qr": {
       "get": {
         "tags": ["Public"], "operationId": "tenantQRISTransactionImage", "security": [{"ApiKey": []}],
         "parameters": [{"$ref": "#/components/parameters/TenantId"}, {"name": "transaction_id", "in": "path", "required": true, "schema": {"type": "string"}}],
-        "responses": {"200": {"description": "QR code PNG", "content": {"image/png": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
+        "responses": {"200": {"description": "QR code PNG", "content": {"image/png": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/TenantOriginDenied"}, "404": {"$ref": "#/components/responses/Problem"}}
       }
     },
     "/v1/tenants/{tenant_id}/qris/dynamic": {
@@ -76,28 +82,28 @@
         "tags": ["Public"], "operationId": "createTenantDynamicQRIS", "security": [{"ApiKey": []}],
         "parameters": [{"$ref": "#/components/parameters/TenantId"}, {"name": "Idempotency-Key", "in": "header", "required": false, "schema": {"type": "string", "maxLength": 200}}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateTenantQRIS"}}}},
-        "responses": {"201": {"description": "QRIS transaction created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "200": {"description": "Existing idempotent QRIS transaction", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/Problem"}}
+        "responses": {"201": {"description": "QRIS transaction created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "200": {"description": "Existing idempotent QRIS transaction", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/TenantOriginDenied"}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/Problem"}}
       }
     },
     "/v1/invoices/{invoice_id}": {
       "get": {
         "tags": ["Public"], "operationId": "getInvoice", "security": [{"ApiKey": []}],
         "parameters": [{"$ref": "#/components/parameters/InvoiceId"}],
-        "responses": {"200": {"description": "Invoice", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Invoice"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
+        "responses": {"200": {"description": "Invoice", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Invoice"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/TenantOriginDenied"}, "404": {"$ref": "#/components/responses/Problem"}}
       }
     },
     "/v1/invoices/{invoice_id}/check": {
       "post": {
         "tags": ["Public"], "operationId": "checkInvoice", "security": [{"ApiKey": []}],
         "parameters": [{"$ref": "#/components/parameters/InvoiceId"}],
-        "responses": {"200": {"description": "Updated invoice", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Invoice"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/Problem"}, "502": {"$ref": "#/components/responses/Problem"}}
+        "responses": {"200": {"description": "Updated invoice", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Invoice"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/TenantOriginDenied"}, "404": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/Problem"}, "502": {"$ref": "#/components/responses/Problem"}}
       }
     },
     "/v1/invoices/{invoice_id}/qr": {
       "get": {
         "tags": ["Public"], "operationId": "invoiceQr", "security": [{"ApiKey": []}],
         "parameters": [{"$ref": "#/components/parameters/InvoiceId"}],
-        "responses": {"200": {"description": "QR code PNG", "content": {"image/png": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}
+        "responses": {"200": {"description": "QR code PNG", "content": {"image/png": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/TenantOriginDenied"}, "404": {"$ref": "#/components/responses/Problem"}}
       }
     },
     "/admin/tenants": {
@@ -270,7 +276,8 @@
       "TenantFilter": {"name": "tenant_id", "in": "query", "required": false, "schema": {"type": "string"}}
     },
     "responses": {
-      "Problem": {"description": "Error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Problem"}}}}
+      "Problem": {"description": "Error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "TenantOriginDenied": {"description": "Authenticated browser Origin is not allowed for this production tenant.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Problem"}, "examples": {"invalidOrigin": {"value": {"error": "invalid origin"}}}}}}
     },
     "schemas": {
       "Problem": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}, "code": {"type": "string"}}},
@@ -297,7 +304,7 @@
       },
       "CreateTenant": {
         "type": "object", "additionalProperties": false, "required": ["name", "merchant_id"],
-        "properties": {"name": {"type": "string"}, "merchant_id": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}}
+        "properties": {"name": {"type": "string"}, "merchant_id": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}, "sandbox_mode": {"type": "boolean", "default": false, "description": "Allows authenticated browser requests from any valid Origin. Does not bypass API-key authentication."}}
       },
       "CreateMerchantAccount": {
         "type": "object", "additionalProperties": false, "required": ["id", "tenant_id", "provider", "name", "credential"],
@@ -314,12 +321,12 @@
         }
       },
       "Tenant": {
-        "type": "object", "required": ["id", "name", "api_key_recoverable", "active", "created_at"],
-        "properties": {"id": {"type": "string"}, "merchant_id": {"type": "string"}, "name": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}, "api_key_recoverable": {"type": "boolean", "description": "False for legacy credentials that must be rotated before reveal."}, "active": {"type": "boolean"}, "created_at": {"type": "string", "format": "date-time"}}
+        "type": "object", "required": ["id", "name", "sandbox_mode", "api_key_recoverable", "active", "created_at"],
+        "properties": {"id": {"type": "string"}, "merchant_id": {"type": "string"}, "name": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}, "sandbox_mode": {"type": "boolean", "description": "When true, authenticated browser calls may use any valid Origin."}, "api_key_recoverable": {"type": "boolean", "description": "False for legacy credentials that must be rotated before reveal."}, "active": {"type": "boolean"}, "created_at": {"type": "string", "format": "date-time"}}
       },
       "UpdateTenant": {
-        "type": "object", "additionalProperties": false, "required": ["name", "merchant_id", "site_url", "callback_url", "webhook_url", "active"],
-        "properties": {"name": {"type": "string"}, "merchant_id": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}, "active": {"type": "boolean"}}
+        "type": "object", "additionalProperties": false, "required": ["name", "merchant_id", "site_url", "callback_url", "webhook_url", "sandbox_mode", "active"],
+        "properties": {"name": {"type": "string"}, "merchant_id": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}, "sandbox_mode": {"type": "boolean", "description": "Allows authenticated browser requests from any valid Origin."}, "active": {"type": "boolean"}}
       },
       "TenantCredential": {
         "type": "object", "required": ["tenant", "api_key", "api_key_visible_once"],
