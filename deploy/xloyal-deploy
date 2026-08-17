@@ -72,7 +72,13 @@ healthy() {
   return 1
 }
 
-if docker compose -f "$compose" up -d --build --remove-orphans && healthy; then
+deploy_release() {
+  release_dir=$1
+  XLOYAL_RELEASE_DIR="$release_dir" docker compose -f "$compose" up -d --build --remove-orphans &&
+    XLOYAL_RELEASE_DIR="$release_dir" docker compose -f "$compose" up -d --force-recreate --no-deps edge
+}
+
+if deploy_release "$release" && healthy; then
   install -m 0600 /dev/null /DATA/AppData/xloyal/releases/deployed-commit
   printf '%s\n' "$target" > /DATA/AppData/xloyal/releases/deployed-commit
   rm -f "$signal"
@@ -83,5 +89,5 @@ rm -f "$current.next"
 ln -s "$previous" "$current.next"
 mv -Tf "$current.next" "$current"
 install -m 0644 "$previous/deploy/compose.casaos.yaml" "$compose"
-docker compose -f "$compose" up -d --build --remove-orphans
+deploy_release "$previous"
 exit 1
