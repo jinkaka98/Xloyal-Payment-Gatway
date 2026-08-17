@@ -65,3 +65,27 @@ func TestBrowserJobExpiredLeaseIsRecovered(t *testing.T) {
 		t.Fatalf("recovered job=%+v claimed=%v err=%v", recovered, claimed, err)
 	}
 }
+
+func TestBrowserJobExpiredLeaseMergesExistingQueuedFollowup(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemory()
+	now := time.Date(2026, 8, 17, 17, 0, 0, 0, time.UTC)
+	first := domain.BrowserJob{ID: "job-running", ResourceKey: "neko-shared", MerchantID: "merchant-a", Kind: "merchant_sync", Priority: 50, State: "queued", NotBefore: now, RequestedAt: now}
+	if _, _, err := repo.EnqueueBrowserJob(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	running, claimed, err := repo.ClaimBrowserJob(ctx, "worker-dead", now, time.Minute)
+	if err != nil || !claimed {
+		t.Fatalf("initial claim job=%+v claimed=%v err=%v", running, claimed, err)
+	}
+	followup := first
+	followup.ID = "job-followup"
+	followup.RequestedAt = now.Add(time.Second)
+	if _, created, err := repo.EnqueueBrowserJob(ctx, followup); err != nil || !created {
+		t.Fatalf("followup created=%v err=%v", created, err)
+	}
+	recovered, claimed, err := repo.ClaimBrowserJob(ctx, "worker-recovery", now.Add(2*time.Minute), time.Minute)
+	if err != nil || !claimed || recovered.ID != followup.ID || recovered.RequestCount != 2 {
+		t.Fatalf("recovered job=%+v claimed=%v err=%v", recovered, claimed, err)
+	}
+}

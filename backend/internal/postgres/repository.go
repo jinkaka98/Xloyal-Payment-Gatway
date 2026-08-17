@@ -185,7 +185,29 @@ func (r *Repository) ClaimBrowserJob(ctx context.Context, owner string, now time
 		return domain.BrowserJob{}, false, err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `UPDATE browser_jobs SET state='queued',lease_owner='',lease_until=NULL,not_before=$1,last_error='browser job lease expired; recovered' WHERE state='running' AND lease_until <= $1`, now); err != nil {
+	rows, err := tx.QueryContext(ctx, `SELECT id,resource_key,merchant_id,kind,priority,not_before,request_count FROM browser_jobs WHERE state='running' AND lease_until <= $1 FOR UPDATE`, now)
+	if err != nil {
+		return domain.BrowserJob{}, false, err
+	}
+	for rows.Next() {
+		var expired domain.BrowserJob
+		if err = rows.Scan(&expired.ID, &expired.ResourceKey, &expired.MerchantID, &expired.Kind, &expired.Priority, &expired.NotBefore, &expired.RequestCount); err != nil {
+			rows.Close()
+			return domain.BrowserJob{}, false, err
+		}
+		var merged int64
+		err = tx.QueryRowContext(ctx, `UPDATE browser_jobs SET priority=GREATEST(priority,$1),not_before=LEAST(not_before,$2),request_count=request_count+$3,last_error='browser job lease expired; recovered' WHERE state='queued' AND resource_key=$4 AND merchant_id=$5 AND kind=$6 RETURNING 1`, expired.Priority, expired.NotBefore, expired.RequestCount, expired.ResourceKey, expired.MerchantID, expired.Kind).Scan(&merged)
+		if errors.Is(err, sql.ErrNoRows) {
+			_, err = tx.ExecContext(ctx, `UPDATE browser_jobs SET state='queued',lease_owner='',lease_until=NULL,not_before=$1,last_error='browser job lease expired; recovered' WHERE id=$2`, now, expired.ID)
+		} else if err == nil {
+			_, err = tx.ExecContext(ctx, `DELETE FROM browser_jobs WHERE id=$1`, expired.ID)
+		}
+		if err != nil {
+			rows.Close()
+			return domain.BrowserJob{}, false, err
+		}
+	}
+	if err = rows.Close(); err != nil {
 		return domain.BrowserJob{}, false, err
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM browser_jobs WHERE state IN ('succeeded','failed') AND completed_at < $1`, now.Add(-7*24*time.Hour)); err != nil {

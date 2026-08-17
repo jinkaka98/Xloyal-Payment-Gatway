@@ -218,6 +218,25 @@ func (m *Memory) ClaimBrowserJob(_ context.Context, owner string, now time.Time,
 	defer m.mu.Unlock()
 	for id, job := range m.browserJobs {
 		if job.State == "running" && job.LeaseUntil != nil && !job.LeaseUntil.After(now) {
+			var queuedID string
+			for candidateID, candidate := range m.browserJobs {
+				if candidate.State == "queued" && candidate.ResourceKey == job.ResourceKey && candidate.MerchantID == job.MerchantID && candidate.Kind == job.Kind {
+					queuedID = candidateID
+					break
+				}
+			}
+			if queuedID != "" {
+				queued := m.browserJobs[queuedID]
+				queued.Priority = maxInt(queued.Priority, job.Priority)
+				if job.NotBefore.Before(queued.NotBefore) {
+					queued.NotBefore = job.NotBefore
+				}
+				queued.RequestCount += job.RequestCount
+				queued.LastError = "browser job lease expired; recovered"
+				m.browserJobs[queuedID] = queued
+				delete(m.browserJobs, id)
+				continue
+			}
 			job.State = "queued"
 			job.LeaseOwner = ""
 			job.LeaseUntil = nil
@@ -264,6 +283,13 @@ func (m *Memory) ClaimBrowserJob(_ context.Context, owner string, now time.Time,
 	job.Attempt++
 	m.browserJobs[job.ID] = job
 	return job, true, nil
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func (m *Memory) CompleteBrowserJob(_ context.Context, id, owner string, completedAt time.Time) error {
