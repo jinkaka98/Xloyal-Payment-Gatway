@@ -72,6 +72,7 @@ func (s Server) Handler() http.Handler {
 	m.HandleFunc("GET /admin/merchant-ids/{id}/tariff", s.admin("viewer", s.getTariff))
 	m.HandleFunc("PUT /admin/merchant-ids/{id}/tariff", s.admin("operator", s.putTariff))
 	m.HandleFunc("GET /admin/merchant-transactions", s.admin("viewer", s.listMerchantTransactions))
+	m.HandleFunc("GET /admin/tenant-transactions", s.admin("viewer", s.listAdminTenantTransactions))
 	m.HandleFunc("GET /admin/global-transactions", s.admin("viewer", s.listGlobalTransactions))
 	m.HandleFunc("GET /admin/merchant-accounts", s.admin("viewer", s.listMerchants))
 	m.HandleFunc("POST /admin/merchant-accounts", s.admin("operator", s.createMerchant))
@@ -642,7 +643,7 @@ func (s Server) createTenantQRIS(w http.ResponseWriter, r *http.Request, tenant 
 	payment := domain.TestPayment{
 		ID: newID(), IdempotencyKey: key, QRISTemplateID: template.ID, MerchantID: tenant.MerchantID, TenantID: tenant.ID,
 		Amount: in.Amount, DynamicPayload: payload, UniqueCode: uniqueCode, Status: domain.InvoicePending,
-		RequestSource: "tenant_api", MatchConfidence: "waiting_first_check", CreatedAt: now, UpdatedAt: now,
+		RequestSource: "tenant_api", MatchConfidence: "waiting_first_check", SandboxMode: tenant.SandboxMode, CreatedAt: now, UpdatedAt: now,
 		ExpiresAt: now.Add(time.Duration(expiresIn) * time.Second),
 	}
 	next := now.Add(15 * time.Second)
@@ -750,6 +751,58 @@ func (s Server) listMerchantTransactions(w http.ResponseWriter, r *http.Request,
 	}
 	v, err := s.Repo.ListPortalTransactions(r.Context(), r.URL.Query().Get("merchant_id"), r.URL.Query().Get("tenant_id"), limit)
 	respond(w, v, err)
+}
+func (s Server) listAdminTenantTransactions(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
+	limit, ok := listLimit(w, r)
+	if !ok {
+		return
+	}
+	tenantID := r.URL.Query().Get("tenant_id")
+	invoices, err := s.Repo.ListInvoices(r.Context(), tenantID, 500)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	_, _ = s.Repo.ExpirePendingTestPayments(r.Context(), time.Now().UTC())
+	payments, err := s.Repo.ListTenantTestPayments(r.Context(), tenantID, 500)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	items := make([]domain.TenantTransaction, 0, len(invoices)+len(payments))
+	for _, invoice := range invoices {
+		items = append(items, domain.TenantTransaction{
+			ID: invoice.ID, TenantID: invoice.TenantID, MerchantID: invoice.MerchantAccountID,
+			Kind: "invoice", Mode: transactionMode(invoice.SandboxMode), RequestSource: "tenant_invoice_api",
+			IdempotencyKey: invoice.IdempotencyKey, Amount: invoice.Amount, Currency: invoice.Currency,
+			Status: invoice.Status, ProviderReference: invoice.ProviderReference, CreatedAt: invoice.CreatedAt,
+			UpdatedAt: invoice.UpdatedAt, ExpiresAt: invoice.ExpiresAt, LastCheckedAt: invoice.LastCheckedAt,
+			CheckCount: invoice.CheckCount,
+		})
+	}
+	for _, payment := range payments {
+		items = append(items, domain.TenantTransaction{
+			ID: payment.ID, TenantID: payment.TenantID, MerchantID: payment.MerchantID,
+			Kind: "qris", Mode: transactionMode(payment.SandboxMode), RequestSource: payment.RequestSource,
+			IdempotencyKey: payment.IdempotencyKey, Amount: payment.Amount, Currency: "IDR",
+			Status: payment.Status, Validation: payment.MatchConfidence,
+			MatchedTransactionID: payment.MatchedTransactionID, CreatedAt: payment.CreatedAt,
+			UpdatedAt: payment.UpdatedAt, ExpiresAt: payment.ExpiresAt,
+			LastCheckedAt: payment.LastCheckedAt, CheckCount: payment.CheckCount,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	respond(w, items, nil)
+}
+
+func transactionMode(sandbox bool) string {
+	if sandbox {
+		return "sandbox"
+	}
+	return "production"
 }
 func (s Server) listGlobalTransactions(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
 	limit, ok := listLimit(w, r)
@@ -923,7 +976,7 @@ func (s Server) createInvoice(w http.ResponseWriter, r *http.Request, t domain.T
 	if in.IdempotencyKey == "" {
 		in.IdempotencyKey = r.Header.Get("Idempotency-Key")
 	}
-	inv, created, err := s.Gateway.CreateInvoice(r.Context(), gateway.CreateInvoiceInput{TenantID: t.ID, MerchantAccountID: in.MerchantAccountID, IdempotencyKey: in.IdempotencyKey, Amount: in.Amount, Currency: in.Currency, Description: in.Description})
+	inv, created, err := s.Gateway.CreateInvoice(r.Context(), gateway.CreateInvoiceInput{TenantID: t.ID, MerchantAccountID: in.MerchantAccountID, IdempotencyKey: in.IdempotencyKey, Amount: in.Amount, Currency: in.Currency, Description: in.Description, SandboxMode: t.SandboxMode})
 	if err != nil {
 		if errors.Is(err, gateway.ErrIdempotencyConflict) {
 			problem(w, http.StatusConflict, err.Error())

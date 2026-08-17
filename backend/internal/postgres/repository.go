@@ -250,7 +250,7 @@ func (r *Repository) ListMerchantAccounts(ctx context.Context, tenant string) ([
 	return out, rows.Err()
 }
 func (r *Repository) CreateInvoice(ctx context.Context, v domain.Invoice) (domain.Invoice, bool, error) {
-	res, err := r.DB.ExecContext(ctx, `INSERT INTO invoices(id,tenant_id,merchant_account_id,idempotency_key,amount,currency,description,provider_reference,provider_request_date,qr_payload,status,created_at,updated_at,expires_at,check_count) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(tenant_id,idempotency_key) DO NOTHING`, v.ID, v.TenantID, v.MerchantAccountID, v.IdempotencyKey, v.Amount, v.Currency, v.Description, v.ProviderReference, v.ProviderRequestDate, v.QRPayload, v.Status, v.CreatedAt, v.UpdatedAt, v.ExpiresAt, v.CheckCount)
+	res, err := r.DB.ExecContext(ctx, `INSERT INTO invoices(id,tenant_id,merchant_account_id,idempotency_key,amount,currency,description,provider_reference,provider_request_date,qr_payload,status,created_at,updated_at,expires_at,check_count,sandbox_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(tenant_id,idempotency_key) DO NOTHING`, v.ID, v.TenantID, v.MerchantAccountID, v.IdempotencyKey, v.Amount, v.Currency, v.Description, v.ProviderReference, v.ProviderRequestDate, v.QRPayload, v.Status, v.CreatedAt, v.UpdatedAt, v.ExpiresAt, v.CheckCount, v.SandboxMode)
 	if err != nil {
 		return v, false, err
 	}
@@ -356,7 +356,7 @@ func (r *Repository) AllowQRISRequest(ctx context.Context, templateID, tenantID 
 	return count <= max, retry, err
 }
 func (r *Repository) CreateTestPayment(ctx context.Context, v domain.TestPayment) error {
-	_, err := r.DB.ExecContext(ctx, `INSERT INTO test_payments(id,idempotency_key,qris_template_id,merchant_id,tenant_id,amount,dynamic_payload,unique_code,status,request_source,match_confidence,matched_transaction_id,created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count) VALUES($1,NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,NULLIF($12,''),$13,$14,$15,$16,$17,$18)`, v.ID, v.IdempotencyKey, v.QRISTemplateID, v.MerchantID, v.TenantID, v.Amount, v.DynamicPayload, v.UniqueCode, v.Status, v.RequestSource, v.MatchConfidence, v.MatchedTransactionID, v.CreatedAt, v.UpdatedAt, v.ExpiresAt, v.LastCheckedAt, v.NextCheckAt, v.CheckCount)
+	_, err := r.DB.ExecContext(ctx, `INSERT INTO test_payments(id,idempotency_key,qris_template_id,merchant_id,tenant_id,amount,dynamic_payload,unique_code,status,request_source,match_confidence,matched_transaction_id,created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count,sandbox_mode) VALUES($1,NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,NULLIF($12,''),$13,$14,$15,$16,$17,$18,$19)`, v.ID, v.IdempotencyKey, v.QRISTemplateID, v.MerchantID, v.TenantID, v.Amount, v.DynamicPayload, v.UniqueCode, v.Status, v.RequestSource, v.MatchConfidence, v.MatchedTransactionID, v.CreatedAt, v.UpdatedAt, v.ExpiresAt, v.LastCheckedAt, v.NextCheckAt, v.CheckCount, v.SandboxMode)
 	return err
 }
 
@@ -399,7 +399,7 @@ func (r *Repository) CreateTenantTestPayment(ctx context.Context, v domain.TestP
 	if count > max {
 		return domain.TestPayment{}, false, false, retry, nil
 	}
-	res, err := tx.ExecContext(ctx, `INSERT INTO test_payments(id,idempotency_key,qris_template_id,merchant_id,tenant_id,amount,dynamic_payload,unique_code,status,request_source,match_confidence,matched_transaction_id,created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count) VALUES($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,'tenant_api',$10,NULLIF($11,''),$12,$13,$14,$15,$16,$17) ON CONFLICT(tenant_id,idempotency_key) WHERE request_source='tenant_api' AND idempotency_key IS NOT NULL DO NOTHING`, v.ID, v.IdempotencyKey, v.QRISTemplateID, v.MerchantID, v.TenantID, v.Amount, v.DynamicPayload, v.UniqueCode, v.Status, v.MatchConfidence, v.MatchedTransactionID, v.CreatedAt, v.UpdatedAt, v.ExpiresAt, v.LastCheckedAt, v.NextCheckAt, v.CheckCount)
+	res, err := tx.ExecContext(ctx, `INSERT INTO test_payments(id,idempotency_key,qris_template_id,merchant_id,tenant_id,amount,dynamic_payload,unique_code,status,request_source,match_confidence,matched_transaction_id,created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count,sandbox_mode) VALUES($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,'tenant_api',$10,NULLIF($11,''),$12,$13,$14,$15,$16,$17,$18) ON CONFLICT(tenant_id,idempotency_key) WHERE request_source='tenant_api' AND idempotency_key IS NOT NULL DO NOTHING`, v.ID, v.IdempotencyKey, v.QRISTemplateID, v.MerchantID, v.TenantID, v.Amount, v.DynamicPayload, v.UniqueCode, v.Status, v.MatchConfidence, v.MatchedTransactionID, v.CreatedAt, v.UpdatedAt, v.ExpiresAt, v.LastCheckedAt, v.NextCheckAt, v.CheckCount, v.SandboxMode)
 	if err != nil {
 		return domain.TestPayment{}, false, false, 0, err
 	}
@@ -420,11 +420,11 @@ func (r *Repository) CreateTenantTestPayment(ctx context.Context, v domain.TestP
 	return stored, n == 1, true, 0, nil
 }
 
-const testPaymentColumns = `SELECT id,COALESCE(idempotency_key,''),qris_template_id,COALESCE(merchant_id,''),COALESCE(tenant_id,''),amount,dynamic_payload,unique_code,status,request_source,match_confidence,COALESCE(matched_transaction_id,''),created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count FROM test_payments`
+const testPaymentColumns = `SELECT id,COALESCE(idempotency_key,''),qris_template_id,COALESCE(merchant_id,''),COALESCE(tenant_id,''),amount,dynamic_payload,unique_code,status,request_source,match_confidence,COALESCE(matched_transaction_id,''),created_at,updated_at,expires_at,last_checked_at,next_check_at,check_count,sandbox_mode FROM test_payments`
 
 func scanTestPayment(s interface{ Scan(...any) error }) (domain.TestPayment, error) {
 	var v domain.TestPayment
-	err := s.Scan(&v.ID, &v.IdempotencyKey, &v.QRISTemplateID, &v.MerchantID, &v.TenantID, &v.Amount, &v.DynamicPayload, &v.UniqueCode, &v.Status, &v.RequestSource, &v.MatchConfidence, &v.MatchedTransactionID, &v.CreatedAt, &v.UpdatedAt, &v.ExpiresAt, &v.LastCheckedAt, &v.NextCheckAt, &v.CheckCount)
+	err := s.Scan(&v.ID, &v.IdempotencyKey, &v.QRISTemplateID, &v.MerchantID, &v.TenantID, &v.Amount, &v.DynamicPayload, &v.UniqueCode, &v.Status, &v.RequestSource, &v.MatchConfidence, &v.MatchedTransactionID, &v.CreatedAt, &v.UpdatedAt, &v.ExpiresAt, &v.LastCheckedAt, &v.NextCheckAt, &v.CheckCount, &v.SandboxMode)
 	return v, err
 }
 func (r *Repository) TestPayment(ctx context.Context, id string) (domain.TestPayment, error) {
@@ -511,7 +511,15 @@ func (r *Repository) ListTestPayments(ctx context.Context, limit int) ([]domain.
 	return out, rows.Err()
 }
 func (r *Repository) ListTenantTestPayments(ctx context.Context, tenantID string, limit int) ([]domain.TestPayment, error) {
-	rows, err := r.DB.QueryContext(ctx, testPaymentColumns+` WHERE tenant_id=$1 AND request_source='tenant_api' ORDER BY created_at DESC LIMIT $2`, tenantID, limit)
+	query := testPaymentColumns + ` WHERE request_source='tenant_api'`
+	args := []any{}
+	if tenantID != "" {
+		query += ` AND tenant_id=$1`
+		args = append(args, tenantID)
+	}
+	args = append(args, limit)
+	query += ` ORDER BY created_at DESC LIMIT $` + fmt.Sprint(len(args))
+	rows, err := r.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -558,13 +566,13 @@ func (r *Repository) ListAudit(ctx context.Context, tenant string, limit int) ([
 	return out, rows.Err()
 }
 
-const invoiceColumns = `SELECT id,tenant_id,merchant_account_id,idempotency_key,amount,currency,description,provider_reference,provider_request_date,qr_payload,status,created_at,updated_at,expires_at,last_checked_at,check_count FROM invoices`
+const invoiceColumns = `SELECT id,tenant_id,merchant_account_id,idempotency_key,amount,currency,description,provider_reference,provider_request_date,qr_payload,status,created_at,updated_at,expires_at,last_checked_at,check_count,sandbox_mode FROM invoices`
 
 type scanner interface{ Scan(...any) error }
 
 func scanInvoice(s scanner) (domain.Invoice, error) {
 	var v domain.Invoice
-	err := s.Scan(&v.ID, &v.TenantID, &v.MerchantAccountID, &v.IdempotencyKey, &v.Amount, &v.Currency, &v.Description, &v.ProviderReference, &v.ProviderRequestDate, &v.QRPayload, &v.Status, &v.CreatedAt, &v.UpdatedAt, &v.ExpiresAt, &v.LastCheckedAt, &v.CheckCount)
+	err := s.Scan(&v.ID, &v.TenantID, &v.MerchantAccountID, &v.IdempotencyKey, &v.Amount, &v.Currency, &v.Description, &v.ProviderReference, &v.ProviderRequestDate, &v.QRPayload, &v.Status, &v.CreatedAt, &v.UpdatedAt, &v.ExpiresAt, &v.LastCheckedAt, &v.CheckCount, &v.SandboxMode)
 	return v, notFound(err)
 }
 func scanInvoices(rows *sql.Rows, err error) ([]domain.Invoice, error) {

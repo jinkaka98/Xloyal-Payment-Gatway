@@ -71,6 +71,27 @@ export interface Invoice {
   timeline: InvoiceEvent[];
 }
 
+export interface TenantTransaction {
+  id: string;
+  tenantId: string;
+  merchantId: string;
+  kind: "invoice" | "qris";
+  mode: "production" | "sandbox";
+  requestSource: string;
+  idempotencyKey: string;
+  amount: number;
+  currency: "IDR";
+  status: InvoiceStatus;
+  providerReference: string;
+  validation: string;
+  matchedTransactionId: string;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  lastCheckedAt: string | undefined;
+  checkCount: number;
+}
+
 export interface AuditEvent {
   id: string;
   actor: string;

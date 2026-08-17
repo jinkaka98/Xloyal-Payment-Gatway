@@ -8,7 +8,7 @@ const merchantID = /^[A-Za-z0-9_-]{1,128}$/;
 async function authorize() { return verifySessionToken((await cookies()).get(SESSION_COOKIE)?.value, process.env.CONSOLE_SESSION_SECRET ?? ""); }
 function resolvePath(method: string, parts: string[]) {
   const [resource, id, connection, action] = parts;
-  const getResources = new Set(["health", "qris-templates", "qris-test-payments", "merchant-accounts", "dashboard", "invoices", "audit-events", "merchant-transactions", "global-transactions", "merchant-ids"]);
+  const getResources = new Set(["health", "qris-templates", "qris-test-payments", "merchant-accounts", "dashboard", "invoices", "audit-events", "merchant-transactions", "tenant-transactions", "global-transactions", "merchant-ids"]);
   if (parts.length === 1 && method === "GET" && resource && getResources.has(resource)) return `/admin/${resource}`;
   if (resource === "merchant-accounts" && parts.length === 2 && id && merchantID.test(id) && ["GET", "PUT"].includes(method)) return `/admin/merchant-accounts/${id}`;
   if (resource === "tenants" && parts.length === 1 && ["GET", "POST"].includes(method)) return "/admin/tenants";

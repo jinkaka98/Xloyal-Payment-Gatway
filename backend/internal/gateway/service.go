@@ -22,6 +22,7 @@ type Service struct {
 type CreateInvoiceInput struct {
 	TenantID, MerchantAccountID, IdempotencyKey, Currency, Description string
 	Amount                                                             int64
+	SandboxMode                                                        bool
 }
 
 var ErrIdempotencyConflict = errors.New("idempotency key reused with different request")
@@ -61,7 +62,7 @@ func (s Service) CreateInvoice(ctx context.Context, in CreateInvoiceInput) (doma
 		return domain.Invoice{}, false, errors.New("merchant account inactive")
 	}
 	now := s.now()
-	inv := domain.Invoice{ID: id(), TenantID: in.TenantID, MerchantAccountID: in.MerchantAccountID, IdempotencyKey: in.IdempotencyKey, Amount: in.Amount, Currency: in.Currency, Description: in.Description, Status: domain.InvoiceCreating, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(30 * time.Minute)}
+	inv := domain.Invoice{ID: id(), TenantID: in.TenantID, MerchantAccountID: in.MerchantAccountID, IdempotencyKey: in.IdempotencyKey, Amount: in.Amount, Currency: in.Currency, Description: in.Description, Status: domain.InvoiceCreating, SandboxMode: in.SandboxMode, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(30 * time.Minute)}
 	inv, created, err := s.Repo.CreateInvoice(ctx, inv)
 	if err != nil {
 		return inv, created, err

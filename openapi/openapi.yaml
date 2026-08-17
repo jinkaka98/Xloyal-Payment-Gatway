@@ -365,12 +365,12 @@
       },
       "Invoice": {
         "type": "object",
-        "required": ["id", "tenant_id", "merchant_account_id", "idempotency_key", "amount", "currency", "status", "created_at", "updated_at", "expires_at", "check_count"],
+        "required": ["id", "tenant_id", "merchant_account_id", "idempotency_key", "amount", "currency", "status", "sandbox_mode", "created_at", "updated_at", "expires_at", "check_count"],
         "properties": {
           "id": {"type": "string"}, "tenant_id": {"type": "string"}, "merchant_account_id": {"type": "string"}, "idempotency_key": {"type": "string"},
           "amount": {"type": "integer", "format": "int64"}, "currency": {"type": "string"}, "description": {"type": "string"},
           "provider_reference": {"type": "string"}, "provider_request_date": {"type": "string"}, "qr_payload": {"type": "string"},
-          "status": {"type": "string", "enum": ["creating", "pending", "paid", "expired", "failed"]},
+          "status": {"type": "string", "enum": ["creating", "pending", "paid", "expired", "failed"]}, "sandbox_mode": {"type": "boolean", "description": "Snapshot of the tenant mode when this transaction was created."},
           "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
           "last_checked_at": {"type": ["string", "null"], "format": "date-time"}, "check_count": {"type": "integer", "minimum": 0}
         }
@@ -391,11 +391,11 @@
         }
       },
       "TenantQRISTransaction": {
-        "type": "object", "required": ["id", "idempotency_key", "qris_template_id", "merchant_id", "tenant_id", "amount", "dynamic_payload", "unique_code", "status", "request_source", "match_confidence", "created_at", "updated_at", "expires_at", "check_count", "qr_payload", "qr_png_base64", "status_url", "qr_url"],
+        "type": "object", "required": ["id", "idempotency_key", "qris_template_id", "merchant_id", "tenant_id", "amount", "dynamic_payload", "unique_code", "status", "request_source", "match_confidence", "sandbox_mode", "created_at", "updated_at", "expires_at", "check_count", "qr_payload", "qr_png_base64", "status_url", "qr_url"],
         "properties": {
           "id": {"type": "string"}, "idempotency_key": {"type": "string"}, "qris_template_id": {"type": "string"}, "merchant_id": {"type": "string"}, "tenant_id": {"type": "string"},
           "amount": {"type": "integer", "format": "int64"}, "dynamic_payload": {"type": "string"}, "unique_code": {"type": "string"},
-          "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]}, "request_source": {"const": "tenant_api"}, "match_confidence": {"type": "string"},
+          "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]}, "request_source": {"const": "tenant_api"}, "match_confidence": {"type": "string"}, "sandbox_mode": {"type": "boolean", "description": "Snapshot of the tenant mode when this QRIS transaction was created."},
           "matched_transaction_id": {"type": "string"}, "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
           "last_checked_at": {"type": ["string", "null"], "format": "date-time"}, "next_check_at": {"type": ["string", "null"], "format": "date-time"}, "check_count": {"type": "integer", "minimum": 0},
           "qr_payload": {"type": "string"}, "qr_png_base64": {"type": "string", "contentEncoding": "base64"}, "status_url": {"type": "string"}, "qr_url": {"type": "string"}
@@ -418,11 +418,11 @@
         }
       },
       "TestPayment": {
-        "type": "object", "required": ["id", "qris_template_id", "merchant_id", "amount", "dynamic_payload", "status", "request_source", "match_confidence", "created_at", "updated_at", "expires_at", "check_count"],
+        "type": "object", "required": ["id", "qris_template_id", "merchant_id", "amount", "dynamic_payload", "status", "request_source", "match_confidence", "sandbox_mode", "created_at", "updated_at", "expires_at", "check_count"],
         "properties": {
           "id": {"type": "string"}, "idempotency_key": {"type": "string"}, "qris_template_id": {"type": "string"}, "merchant_id": {"type": "string"}, "tenant_id": {"type": "string"}, "amount": {"type": "integer", "format": "int64"},
           "dynamic_payload": {"type": "string"}, "unique_code": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]},
-          "request_source": {"type": "string"}, "match_confidence": {"type": "string"}, "matched_transaction_id": {"type": "string"},
+          "request_source": {"type": "string"}, "match_confidence": {"type": "string"}, "matched_transaction_id": {"type": "string"}, "sandbox_mode": {"type": "boolean"},
           "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
           "last_checked_at": {"type": ["string", "null"], "format": "date-time"}, "check_count": {"type": "integer", "minimum": 0}
         }

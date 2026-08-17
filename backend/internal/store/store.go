@@ -600,7 +600,7 @@ func (m *Memory) ListTenantTestPayments(_ context.Context, tenantID string, limi
 	defer m.mu.Unlock()
 	out := make([]domain.TestPayment, 0)
 	for _, v := range m.payments {
-		if v.TenantID == tenantID && v.RequestSource == "tenant_api" {
+		if v.RequestSource == "tenant_api" && (tenantID == "" || v.TenantID == tenantID) {
 			out = append(out, v)
 		}
 	}

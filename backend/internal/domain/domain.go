@@ -35,6 +35,7 @@ type Invoice struct {
 	ExpiresAt           time.Time     `json:"expires_at"`
 	LastCheckedAt       *time.Time    `json:"last_checked_at"`
 	CheckCount          int           `json:"check_count"`
+	SandboxMode         bool          `json:"sandbox_mode"`
 }
 
 func (i *Invoice) Transition(next InvoiceStatus, now time.Time) error {
@@ -164,6 +165,28 @@ type TestPayment struct {
 	ExpiresAt            time.Time     `json:"expires_at"`
 	LastCheckedAt        *time.Time    `json:"last_checked_at,omitempty"`
 	NextCheckAt          *time.Time    `json:"next_check_at,omitempty"`
+	CheckCount           int           `json:"check_count"`
+	SandboxMode          bool          `json:"sandbox_mode"`
+}
+
+type TenantTransaction struct {
+	ID                   string        `json:"id"`
+	TenantID             string        `json:"tenant_id"`
+	MerchantID           string        `json:"merchant_id,omitempty"`
+	Kind                 string        `json:"kind"`
+	Mode                 string        `json:"mode"`
+	RequestSource        string        `json:"request_source"`
+	IdempotencyKey       string        `json:"idempotency_key,omitempty"`
+	Amount               int64         `json:"amount"`
+	Currency             string        `json:"currency"`
+	Status               InvoiceStatus `json:"status"`
+	ProviderReference    string        `json:"provider_reference,omitempty"`
+	Validation           string        `json:"validation,omitempty"`
+	MatchedTransactionID string        `json:"matched_transaction_id,omitempty"`
+	CreatedAt            time.Time     `json:"created_at"`
+	UpdatedAt            time.Time     `json:"updated_at"`
+	ExpiresAt            time.Time     `json:"expires_at"`
+	LastCheckedAt        *time.Time    `json:"last_checked_at,omitempty"`
 	CheckCount           int           `json:"check_count"`
 }
 

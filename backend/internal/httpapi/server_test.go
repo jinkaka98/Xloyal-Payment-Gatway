@@ -599,12 +599,60 @@ func TestGlobalTransactionsIncludeExpiredQRISTestCheck(t *testing.T) {
 	}
 }
 
+func TestTenantTransactionLedgerIncludesProductionInvoicesAndSandboxQRIS(t *testing.T) {
+	repo := store.NewMemory()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-production", Name: "Production tenant", Active: true})
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-sandbox", Name: "Sandbox tenant", SandboxMode: true, Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-ledger"})
+	_, _, _ = repo.CreateInvoice(ctx, domain.Invoice{
+		ID: "invoice-production", TenantID: "tenant-production", IdempotencyKey: "order-production",
+		Amount: 25000, Currency: "IDR", Status: domain.InvoicePaid,
+		CreatedAt: now.Add(-time.Minute), UpdatedAt: now, ExpiresAt: now.Add(29 * time.Minute),
+	})
+	repo.CreateTestPayment(ctx, domain.TestPayment{
+		ID: "qris-sandbox", IdempotencyKey: "order-sandbox", QRISTemplateID: "template-ledger",
+		MerchantID: "merchant-ledger", TenantID: "tenant-sandbox", Amount: 31000,
+		Status: domain.InvoicePending, RequestSource: "tenant_api", MatchConfidence: "waiting_first_check", SandboxMode: true,
+		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(30 * time.Minute),
+	})
+	repo.CreateTestPayment(ctx, domain.TestPayment{
+		ID: "admin-test", QRISTemplateID: "template-ledger", Amount: 1000,
+		Status: domain.InvoicePending, RequestSource: "admin_qris_test",
+		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(30 * time.Minute),
+	})
+	for i := 0; i < 500; i++ {
+		repo.CreateTestPayment(ctx, domain.TestPayment{
+			ID: fmt.Sprintf("newer-admin-test-%03d", i), QRISTemplateID: "template-ledger", Amount: 1000,
+			Status: domain.InvoicePending, RequestSource: "admin_qris_test",
+			CreatedAt: now.Add(time.Duration(i+1) * time.Second), UpdatedAt: now, ExpiresAt: now.Add(30 * time.Minute),
+		})
+	}
+
+	h := Server{Repo: repo, AdminTokens: map[string]string{"admin": "viewer"}}.Handler()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/admin/tenant-transactions?limit=10", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"id":"invoice-production"`) || !strings.Contains(w.Body.String(), `"mode":"production"`) {
+		t.Fatalf("production ledger code=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"id":"qris-sandbox"`) || !strings.Contains(w.Body.String(), `"mode":"sandbox"`) || !strings.Contains(w.Body.String(), `"kind":"qris"`) {
+		t.Fatalf("sandbox ledger code=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "admin-test") {
+		t.Fatalf("admin QRIS test leaked into tenant ledger body=%s", w.Body.String())
+	}
+}
+
 func TestTenantCanGenerateDynamicQRISOnlyFromOwnedEnabledTemplate(t *testing.T) {
 	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
 	repo := store.NewMemory()
 	ctx := context.Background()
 	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
-	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", MerchantID: "merchant-a", APIKeyHash: security.HashSecret("key-a"), Active: true})
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", MerchantID: "merchant-a", APIKeyHash: security.HashSecret("key-a"), SandboxMode: true, Active: true})
 	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-b", MerchantID: "merchant-a", APIKeyHash: security.HashSecret("key-b"), Active: true})
 	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-a", TenantID: "tenant-a", AccessScope: "selected_tenant", Name: "Store", StaticPayload: staticPayload, StaticToDynamic: true, MaxRequestsPM: 1, Active: true})
 	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-all", AccessScope: "all_tenants", Name: "Shared", StaticPayload: staticPayload, StaticToDynamic: true, MaxRequestsPM: 60, Active: true})
@@ -614,7 +662,7 @@ func TestTenantCanGenerateDynamicQRISOnlyFromOwnedEnabledTemplate(t *testing.T) 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-a/qris/dynamic", strings.NewReader(`{"template_id":"template-a","amount":50000}`))
 	req.Header.Set("X-API-Key", "key-a")
 	h.ServeHTTP(w, req)
-	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"qr_payload":"000201010212`) || !strings.Contains(w.Body.String(), `"qr_png_base64":"`) || !strings.Contains(w.Body.String(), `"amount":50000`) {
+	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"qr_payload":"000201010212`) || !strings.Contains(w.Body.String(), `"qr_png_base64":"`) || !strings.Contains(w.Body.String(), `"amount":50000`) || !strings.Contains(w.Body.String(), `"sandbox_mode":true`) {
 		t.Fatalf("generate code=%d body=%s", w.Code, w.Body.String())
 	}
 

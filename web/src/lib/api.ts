@@ -1,4 +1,4 @@
-import type { ApiEnvelope, AuditEvent, DashboardSummary, GlobalTransactionLog, Invoice, MerchantAccount, MerchantConnection, MerchantID, PortalTransaction, ProviderHealth, QRISTemplate, Tariff, Tenant } from "./types";
+import type { ApiEnvelope, AuditEvent, DashboardSummary, GlobalTransactionLog, Invoice, MerchantAccount, MerchantConnection, MerchantID, PortalTransaction, ProviderHealth, QRISTemplate, Tariff, Tenant, TenantTransaction } from "./types";
 
 const API_URL = process.env.INTERNAL_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 const USE_MOCK = process.env.NEXT_PUBLIC_USE_MOCK_API === "true";
@@ -45,6 +45,27 @@ interface ApiTenant {
   active: boolean;
   api_key_recoverable?: boolean;
   created_at: string;
+}
+
+interface ApiTenantTransaction {
+  id: string;
+  tenant_id: string;
+  merchant_id?: string;
+  kind: "invoice" | "qris";
+  mode: "production" | "sandbox";
+  request_source: string;
+  idempotency_key?: string;
+  amount: number;
+  currency: "IDR";
+  status: TenantTransaction["status"];
+  provider_reference?: string;
+  validation?: string;
+  matched_transaction_id?: string;
+  created_at: string;
+  updated_at: string;
+  expires_at: string;
+  last_checked_at?: string;
+  check_count: number;
 }
 
 interface ApiMerchant {
@@ -112,6 +133,10 @@ export const api = {
 	async getMerchantIDs(): Promise<MerchantID[]> { return request<MerchantID[]>("/admin/merchant-ids", []); },
 	async getMerchantConnection(id: string): Promise<MerchantConnection | null> { if (USE_MOCK) return null; try { return await request<MerchantConnection>(`/admin/merchant-ids/${encodeURIComponent(id)}/connection`, {} as MerchantConnection); } catch { return null; } },
 	async getMerchantTransactions(merchantID = ""): Promise<PortalTransaction[]> { return request<PortalTransaction[]>(`/admin/merchant-transactions?merchant_id=${encodeURIComponent(merchantID)}`, []); },
+	async getTenantTransactions(): Promise<TenantTransaction[]> {
+		const items = await request<ApiTenantTransaction[]>("/admin/tenant-transactions?limit=500", []);
+		return items.map((item) => ({ id: item.id, tenantId: item.tenant_id, merchantId: item.merchant_id ?? "", kind: item.kind, mode: item.mode, requestSource: item.request_source, idempotencyKey: item.idempotency_key ?? "", amount: item.amount, currency: item.currency, status: item.status, providerReference: item.provider_reference ?? "", validation: item.validation ?? "", matchedTransactionId: item.matched_transaction_id ?? "", createdAt: item.created_at, updatedAt: item.updated_at, expiresAt: item.expires_at, lastCheckedAt: item.last_checked_at, checkCount: item.check_count ?? 0 }));
+	},
 	async getGlobalTransactions(limit = 500): Promise<GlobalTransactionLog[]> { return request<GlobalTransactionLog[]>(`/admin/global-transactions?limit=${limit}`, []); },
 	async getTariff(id: string): Promise<Tariff> { return request<Tariff>(`/admin/merchant-ids/${encodeURIComponent(id)}/tariff`, { merchant_id: id, basis_points: 0, fixed_fee: 0, active: true }); },
 	async getQRSTemplates(): Promise<QRISTemplate[]> { return request<QRISTemplate[]>("/admin/qris-templates", []); },
