@@ -5,7 +5,7 @@ import { BookOpen, Check, Copy, Eye, EyeOff, KeyRound, Monitor, Pencil, Plus, Re
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { formatDate } from "@/lib/format";
-import type { MerchantID, Tenant } from "@/lib/types";
+import type { MerchantID, QRISTemplate, Tenant } from "@/lib/types";
 
 type TenantAPI = { id: string; merchant_id?: string; name: string; site_url?: string; callback_url?: string; webhook_url?: string; sandbox_mode: boolean; active: boolean; api_key_recoverable?: boolean; created_at: string };
 type CreatedTenant = { tenant: TenantAPI; api_key: string; api_key_visible_once: boolean };
@@ -19,7 +19,16 @@ function tenantSiteOrigin(siteURL: string): string {
   try { return new URL(siteURL).origin; } catch { return "Site tujuan"; }
 }
 
-export function TenantConsole({ initialTenants, merchants }: { initialTenants: Tenant[]; merchants: MerchantID[] }) {
+function qrisTemplateScope(template: QRISTemplate): "all_tenants" | "selected_tenant" {
+  return template.access_scope || (template.tenant_id ? "selected_tenant" : "all_tenants");
+}
+
+function tenantCanUseQRSTemplate(template: QRISTemplate, tenantID: string): boolean {
+  const scope = qrisTemplateScope(template);
+  return template.active && template.static_to_dynamic && (scope === "all_tenants" || (scope === "selected_tenant" && template.tenant_id === tenantID));
+}
+
+export function TenantConsole({ initialTenants, merchants, qrisTemplates = [] }: { initialTenants: Tenant[]; merchants: MerchantID[]; qrisTemplates?: QRISTemplate[] }) {
   const [tenants, setTenants] = useState(initialTenants);
   const [modal, setModal] = useState<Modal>(null);
   const [busy, setBusy] = useState(false);
@@ -72,7 +81,7 @@ export function TenantConsole({ initialTenants, merchants }: { initialTenants: T
     </section>
     {modal && <div className="tenant-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}><section className={`tenant-modal ${modal.kind === "docs" ? "tenant-docs-modal" : ""}`} role="dialog" aria-modal="true" aria-labelledby="tenant-dialog-title">
       <header><div><span className="section-kicker">{modal.kind === "docs" ? "Tenant API documentation" : "Tenant API access"}</span><h2 id="tenant-dialog-title">{created ? "Tenant siap digunakan" : modal.kind === "edit" ? `Edit ${selected?.name}` : modal.kind === "docs" ? selected?.name : "Tambah tenant"}</h2></div><button className="icon-button" aria-label="Tutup" onClick={close}><X size={18} /></button></header>
-      {modal.kind === "docs" && selected ? <TenantDocumentation tenant={selected} /> : created ? <div className="tenant-credential-result">
+      {modal.kind === "docs" && selected ? <TenantDocumentation tenant={selected} qrisTemplates={qrisTemplates} /> : created ? <div className="tenant-credential-result">
         <TenantAccessNotice />
         <p>API key siap dipakai. Super admin dapat melihatnya kembali atau merotasinya dari tombol edit tenant.</p>
         <label>Tenant ID<div className="credential-field"><code>{created.tenant.id}</code><button type="button" className="icon-button" title="Salin Tenant ID" onClick={() => copy(created.tenant.id, "id")}>{copied === "id" ? <Check size={16} /> : <Copy size={16} />}</button></div></label>
@@ -152,10 +161,12 @@ function TenantAccessNotice() {
   </aside>;
 }
 
-function TenantDocumentation({ tenant }: { tenant: Tenant }) {
+function TenantDocumentation({ tenant, qrisTemplates }: { tenant: Tenant; qrisTemplates: QRISTemplate[] }) {
   const id = tenant.id;
   const apiBase = "https://api.alpakyros.net";
   const adminBase = "https://pay.alpakyros.net";
+  const availableTemplates = qrisTemplates.filter((template) => tenantCanUseQRSTemplate(template, id));
+  const exampleTemplateID = availableTemplates[0]?.id ?? "TEMPLATE_ID_DARI_ENDPOINT_DI_ATAS";
   return <div className="tenant-docs">
     <div className="tenant-domain-map" aria-label="Peta arah domain payment gateway">
       <section><span>DOMAIN 1</span><Monitor size={18} /><div><strong>Admin Web</strong><code>{adminBase}</code><p>Hanya untuk login operator dan dashboard. Origin lokal yang dipublikasikan adalah <code>127.0.0.1:5656</code>; jangan gunakan domain ini dari aplikasi tenant.</p></div></section>
@@ -165,7 +176,8 @@ function TenantDocumentation({ tenant }: { tenant: Tenant }) {
     <div className="tenant-api-routes"><KeyRound size={17} /><div><strong>Autentikasi Alpakyros LITE</strong><code>Tenant ID: {id}</code><code>X-API-Key: YOUR_API_KEY</code><p>Kirim key hanya ke <code>{apiBase}</code>. Portal merchant dan browser worker tetap berada di jaringan internal gateway.</p></div></div>
     <p>Gunakan header <code>X-API-Key: YOUR_API_KEY</code> pada setiap request. Tenant ID aktif untuk integrasi ini adalah <code>{id}</code>; API key dapat dilihat atau dirotasi oleh super admin dari tombol edit tenant.</p>
     <div className="tenant-api-routes"><Server size={17} /><div><strong>Mode browser: {tenant.sandboxMode ? "Sandbox" : "Production"}</strong><p>{tenant.sandboxMode ? "Request browser boleh berasal dari origin mana pun, tetapi API key tetap wajib dan tetap diverifikasi." : <>Request browser hanya diterima dari origin <code>{tenantSiteOrigin(tenant.siteUrl)}</code>. Request server-to-server tanpa header Origin tetap diterima.</>}</p></div></div>
-    <div className="tenant-doc-endpoint"><strong><span>POST</span>Buat transaksi QRIS dinamis</strong><code>{apiBase}/v1/tenants/{id}/transactions/qris</code><pre>{`curl -X POST '${apiBase}/v1/tenants/${id}/transactions/qris' \\\n  -H 'Content-Type: application/json' \\\n  -H 'X-API-Key: YOUR_API_KEY' \\\n  -d '{"template_id":"QRIS_TEMPLATE_ID","amount":50000,"idempotency_key":"ORDER_UNIQUE_ID"}'`}</pre><p>Respons menyertakan ID transaksi, payload QRIS, PNG base64, URL status, URL QR, status pending, dan waktu kedaluwarsa. Gunakan idempotency key unik per order.</p></div>
+    <div className="tenant-doc-endpoint"><strong><span>GET</span>Daftar template QRIS tersedia</strong><code>{apiBase}/v1/tenants/{id}/qris/templates</code><pre>{`curl '${apiBase}/v1/tenants/${id}/qris/templates' \\\n  -H 'X-API-Key: YOUR_API_KEY'`}</pre><p>Ambil nilai <code>id</code> dari respons ini. Endpoint hanya mengembalikan template aktif yang boleh digunakan Tenant ID ini untuk QRIS dinamis.</p>{availableTemplates.length > 0 ? <ul className="tenant-doc-template-list">{availableTemplates.map((template) => <li key={template.id}><strong>{template.name}</strong><code>{template.id}</code><span>{qrisTemplateScope(template) === "all_tenants" ? "Shared" : "Tenant khusus"} · {template.merchant_name || "Merchant QRIS"}</span></li>)}</ul> : <p>Belum ada template QRIS aktif untuk tenant ini. Atur aksesnya dari QRIS Control.</p>}</div>
+    <div className="tenant-doc-endpoint"><strong><span>POST</span>Buat transaksi QRIS dinamis</strong><code>{apiBase}/v1/tenants/{id}/transactions/qris</code><pre>{`curl -X POST '${apiBase}/v1/tenants/${id}/transactions/qris' \\\n  -H 'Content-Type: application/json' \\\n  -H 'X-API-Key: YOUR_API_KEY' \\\n  -d '{"template_id":"${exampleTemplateID}","amount":50000,"idempotency_key":"ORDER_UNIQUE_ID"}'`}</pre><p>Respons menyertakan ID transaksi, payload QRIS, PNG base64, URL status, URL QR, status pending, dan waktu kedaluwarsa. Gunakan idempotency key unik per order.</p><code>{`const imageSrc = "data:image/png;base64," + response.qr_png_base64;`}</code><p>Tampilkan <code>imageSrc</code> sebagai sumber gambar QR di frontend. Simpan API key dan pemanggilan gateway di backend aplikasi tenant, bukan di JavaScript browser.</p></div>
     <div className="tenant-doc-endpoint"><strong><span>GET</span>Status transaksi QRIS</strong><code>GET /v1/tenants/{id}/transactions/qris/{`{transaction_id}`}</code><code>{apiBase}/v1/tenants/{id}/transactions/qris/{`{transaction_id}`}</code><p>Polling endpoint ini untuk status <code>pending</code>, <code>paid</code>, atau <code>expired</code>.</p></div>
     <div className="tenant-doc-endpoint"><strong><span>GET</span>Gambar QR transaksi</strong><code>{apiBase}/v1/tenants/{id}/transactions/qris/{`{transaction_id}`}/qr</code><p>Mengembalikan PNG selama transaksi masih dapat dibayar.</p></div>
     <div className="tenant-doc-endpoint"><strong><span>POST</span>Alias kompatibilitas QRIS</strong><code>{apiBase}/v1/tenants/{id}/qris/dynamic</code><p>Alias kompatibel untuk pembuatan transaksi. Integrasi baru disarankan memakai route <code>/transactions/qris</code>.</p></div>

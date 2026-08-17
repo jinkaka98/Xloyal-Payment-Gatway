@@ -691,6 +691,83 @@ func TestTenantCanGenerateDynamicQRISOnlyFromOwnedEnabledTemplate(t *testing.T) 
 	}
 }
 
+func TestTenantCanDiscoverOnlyUsableQRSTemplates(t *testing.T) {
+	repo := store.NewMemory()
+	ctx := context.Background()
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", APIKeyHash: security.HashSecret("key-a"), Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-owned", TenantID: "tenant-a", AccessScope: "selected_tenant", Name: "QRIS Tenant A", StaticPayload: "secret-payload", ImageData: []byte("secret-image"), StaticToDynamic: true, Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-other", TenantID: "tenant-b", AccessScope: "selected_tenant", Name: "QRIS Tenant B", StaticToDynamic: true, Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-shared", AccessScope: "all_tenants", Name: "QRIS Bersama", StaticToDynamic: true, Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-inactive", AccessScope: "all_tenants", Name: "Nonaktif", StaticToDynamic: true, Active: false})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-static", AccessScope: "all_tenants", Name: "Statis saja", StaticToDynamic: false, Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-invalid-scope", AccessScope: "unexpected", Name: "Scope rusak", StaticToDynamic: true, Active: true})
+
+	h := Server{Repo: repo}.Handler()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/tenant-a/qris/templates", nil)
+	req.Header.Set("X-API-Key", "key-a")
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"id":"template-owned"`) || !strings.Contains(w.Body.String(), `"id":"template-shared"`) {
+		t.Fatalf("discover code=%d body=%s", w.Code, w.Body.String())
+	}
+	for _, forbidden := range []string{"template-other", "template-inactive", "template-static", "template-invalid-scope", "static_payload", "image_data", "secret-payload", "c2VjcmV0LWltYWdl"} {
+		if strings.Contains(w.Body.String(), forbidden) {
+			t.Fatalf("discovery leaked %q body=%s", forbidden, w.Body.String())
+		}
+	}
+}
+
+func TestTenantQRISCreateExplainsMissingOrUnknownTemplateID(t *testing.T) {
+	repo := store.NewMemory()
+	ctx := context.Background()
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", APIKeyHash: security.HashSecret("key-a"), Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-inactive", Active: false, StaticToDynamic: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-static", Active: true, StaticToDynamic: false})
+	h := Server{Repo: repo}.Handler()
+
+	for name, test := range map[string]struct {
+		body string
+		code int
+	}{
+		"missing":  {body: `{"amount":50000}`, code: http.StatusBadRequest},
+		"unknown":  {body: `{"template_id":"not-registered","amount":50000}`, code: http.StatusNotFound},
+		"inactive": {body: `{"template_id":"template-inactive","amount":50000}`, code: http.StatusConflict},
+		"static":   {body: `{"template_id":"template-static","amount":50000}`, code: http.StatusConflict},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-a/transactions/qris", strings.NewReader(test.body))
+			req.Header.Set("X-API-Key", "key-a")
+			h.ServeHTTP(w, req)
+			if w.Code != test.code || !strings.Contains(w.Body.String(), "/v1/tenants/tenant-a/qris/templates") {
+				t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+type qrisTemplateErrorRepository struct {
+	store.Repository
+}
+
+func (qrisTemplateErrorRepository) QRISTemplate(context.Context, string) (domain.QRISTemplate, error) {
+	return domain.QRISTemplate{}, errors.New("database unavailable")
+}
+
+func TestTenantQRISCreatePreservesTemplateRepositoryFailure(t *testing.T) {
+	base := store.NewMemory()
+	base.CreateTenant(context.Background(), domain.Tenant{ID: "tenant-a", APIKeyHash: security.HashSecret("key-a"), Active: true})
+	h := Server{Repo: qrisTemplateErrorRepository{Repository: base}}.Handler()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-a/transactions/qris", strings.NewReader(`{"template_id":"template-a","amount":50000}`))
+	req.Header.Set("X-API-Key", "key-a")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestTenantQRISTransactionRoutesPersistAndAreIdempotent(t *testing.T) {
 	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
 	repo := store.NewMemory()

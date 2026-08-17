@@ -2,6 +2,12 @@ import React from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TenantConsole } from "./tenant-console";
+import type { QRISTemplate } from "@/lib/types";
+
+const templates: QRISTemplate[] = [
+  { id: "qris_lite_primary", tenant_id: "tenant_alpakyros_lite", name: "QRIS Alpakyros LITE", image_mime: "image/png", merchant_name: "ALPAKYROS", merchant_city: "JAKARTA", access_scope: "selected_tenant" as const, static_to_dynamic: true, max_requests_per_minute: 60, active: true, created_at: "2026-08-14T00:00:00Z" },
+  { id: "qris_legacy_shared", name: "QRIS Shared Legacy", image_mime: "image/png", merchant_name: "ALPAKYROS", merchant_city: "JAKARTA", access_scope: "" as QRISTemplate["access_scope"], static_to_dynamic: true, max_requests_per_minute: 60, active: true, created_at: "2026-08-14T00:00:00Z" },
+];
 
 const tenant = {
   id: "tenant_alpakyros_lite",
@@ -66,12 +72,17 @@ describe("TenantConsole credentials and documentation", () => {
   });
 
   it("documents the deployed Alpakyros QRIS routes with the selected tenant ID", () => {
-    render(<TenantConsole initialTenants={[{ ...tenant, siteUrl: "https://lite.alpakyros.net/store" }]} merchants={[]} />);
+    render(<TenantConsole initialTenants={[{ ...tenant, siteUrl: "https://lite.alpakyros.net/store" }]} merchants={[]} qrisTemplates={templates} />);
     fireEvent.click(screen.getByRole("button", { name: "Dokumentasi Alpakyros LITE" }));
 
     expect(screen.getAllByText(/https:\/\/api\.alpakyros\.net\/v1\/tenants\/tenant_alpakyros_lite\/transactions\/qris/).length).toBeGreaterThan(0);
     expect(screen.getByText(/GET \/v1\/tenants\/tenant_alpakyros_lite\/transactions\/qris\/\{transaction_id\}/)).toBeInTheDocument();
     expect(screen.getAllByText(/X-API-Key/).length).toBeGreaterThan(0);
+    expect(screen.getByText("qris_lite_primary")).toBeInTheDocument();
+    expect(screen.getByText("qris_legacy_shared")).toBeInTheDocument();
+    expect(screen.getByText(/Shared .* ALPAKYROS/)).toBeInTheDocument();
+    expect(screen.getAllByText(/https:\/\/api\.alpakyros\.net\/v1\/tenants\/tenant_alpakyros_lite\/qris\/templates/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/data:image\/png;base64/)).toBeInTheDocument();
     expect(screen.getByText(/Request browser hanya diterima dari origin/)).toHaveTextContent("https://lite.alpakyros.net");
     expect(screen.getByText(/Request browser hanya diterima dari origin/)).not.toHaveTextContent("/store");
   });

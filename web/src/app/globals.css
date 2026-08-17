@@ -342,6 +342,10 @@ body { background: linear-gradient(90deg, rgba(0,125,134,.035) 1px, transparent 
 .tenant-doc-endpoint > code { width:fit-content; max-width:100%; overflow:auto; padding:6px 8px; background:var(--surface-muted); white-space:nowrap; }
 .tenant-doc-endpoint p { margin:0; color:var(--muted); font-size:12px; line-height:1.5; }
 .tenant-doc-endpoint pre { margin:0; padding:12px; overflow:auto; border:1px solid var(--line); background:#17201c; color:#e7efea; font:11px/1.55 "SFMono-Regular",Consolas,monospace; }
+.tenant-doc-template-list { margin:0; padding:0; list-style:none; display:grid; border-top:1px solid var(--line); }
+.tenant-doc-template-list li { min-width:0; padding:9px 0; display:grid; grid-template-columns:minmax(120px,1fr) minmax(180px,1.4fr) auto; gap:10px; align-items:center; border-bottom:1px solid var(--line); font-size:12px; }
+.tenant-doc-template-list code { overflow-wrap:anywhere; }
+.tenant-doc-template-list span { color:var(--muted); }
 .tenant-transaction-toolbar { min-height:72px; padding:13px 16px; border-bottom:1px solid var(--line); display:grid; grid-template-columns:minmax(240px,1fr) minmax(220px,.65fr) minmax(150px,.35fr); gap:10px; align-items:end; }
 .tenant-transaction-toolbar > label:not(.search-field) { display:grid; gap:5px; color:var(--muted); font-size:10px; font-weight:700; text-transform:uppercase; }
 .tenant-transaction-toolbar select { height:38px; padding:0 10px; border:1px solid var(--line-strong); border-radius:4px; background:#fff; color:var(--text); font-size:12px; text-transform:none; }

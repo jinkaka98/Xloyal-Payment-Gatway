@@ -50,6 +50,7 @@ func (s Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/tenants/{tenant_id}/transactions/qris", s.public(s.createTenantQRISTransaction))
 	m.HandleFunc("GET /v1/tenants/{tenant_id}/transactions/qris/{transaction_id}", s.public(s.getTenantQRISTransaction))
 	m.HandleFunc("GET /v1/tenants/{tenant_id}/transactions/qris/{transaction_id}/qr", s.public(s.getTenantQRISTransactionQR))
+	m.HandleFunc("GET /v1/tenants/{tenant_id}/qris/templates", s.public(s.listTenantQRSTemplates))
 	m.HandleFunc("POST /v1/tenants/{tenant_id}/qris/dynamic", s.public(s.createTenantDynamicQRIS))
 	m.HandleFunc("GET /v1/invoices/{invoice_id}", s.public(s.getInvoice))
 	m.HandleFunc("POST /v1/invoices/{invoice_id}/check", s.public(s.checkInvoice))
@@ -570,6 +571,42 @@ func (s Server) createTenantDynamicQRIS(w http.ResponseWriter, r *http.Request, 
 	s.createTenantQRIS(w, r, tenant)
 }
 
+func (s Server) listTenantQRSTemplates(w http.ResponseWriter, r *http.Request, tenant domain.Tenant) {
+	templates, err := s.Repo.ListQRISTemplates(r.Context())
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	available := make([]domain.QRISTemplate, 0, len(templates))
+	for _, template := range templates {
+		if template.Active && template.StaticToDynamic && tenantCanAccessQRSTemplate(template, tenant.ID) {
+			template.StaticPayload = ""
+			template.ImageData = nil
+			available = append(available, template)
+		}
+	}
+	write(w, http.StatusOK, available)
+}
+
+func tenantCanAccessQRSTemplate(template domain.QRISTemplate, tenantID string) bool {
+	accessScope := template.AccessScope
+	if accessScope == "" {
+		if template.TenantID == "" {
+			accessScope = "all_tenants"
+		} else {
+			accessScope = "selected_tenant"
+		}
+	}
+	switch accessScope {
+	case "all_tenants":
+		return true
+	case "selected_tenant":
+		return template.TenantID == tenantID
+	default:
+		return false
+	}
+}
+
 func (s Server) createTenantQRIS(w http.ResponseWriter, r *http.Request, tenant domain.Tenant) {
 	var in struct {
 		TemplateID       string `json:"template_id"`
@@ -580,20 +617,22 @@ func (s Server) createTenantQRIS(w http.ResponseWriter, r *http.Request, tenant 
 	if !decode(w, r, &in) {
 		return
 	}
+	in.TemplateID = strings.TrimSpace(in.TemplateID)
+	if in.TemplateID == "" {
+		problem(w, http.StatusBadRequest, "template_id is required; retrieve it from GET /v1/tenants/"+tenant.ID+"/qris/templates")
+		return
+	}
 	template, err := s.Repo.QRISTemplate(r.Context(), in.TemplateID)
-	accessScope := template.AccessScope
-	if accessScope == "" && template.TenantID != "" {
-		accessScope = "selected_tenant"
+	if errors.Is(err, store.ErrNotFound) || (err == nil && !tenantCanAccessQRSTemplate(template, tenant.ID)) {
+		problem(w, http.StatusNotFound, "QRIS template not found or not accessible; retrieve template_id from GET /v1/tenants/"+tenant.ID+"/qris/templates")
+		return
 	}
-	if accessScope == "" {
-		accessScope = "all_tenants"
-	}
-	if err != nil || (accessScope == "selected_tenant" && template.TenantID != tenant.ID) {
-		notFound(w, store.ErrNotFound)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "load QRIS template failed")
 		return
 	}
 	if !template.Active || !template.StaticToDynamic {
-		problem(w, http.StatusConflict, "QRIS template is not enabled for dynamic tenant requests")
+		problem(w, http.StatusConflict, "QRIS template is not enabled for dynamic tenant requests; retrieve an available template_id from GET /v1/tenants/"+tenant.ID+"/qris/templates")
 		return
 	}
 	if tenant.MerchantID == "" {
