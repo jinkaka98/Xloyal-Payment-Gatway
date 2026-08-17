@@ -189,12 +189,19 @@ func (r *Repository) ClaimBrowserJob(ctx context.Context, owner string, now time
 	if err != nil {
 		return domain.BrowserJob{}, false, err
 	}
+	expiredJobs := make([]domain.BrowserJob, 0)
 	for rows.Next() {
 		var expired domain.BrowserJob
 		if err = rows.Scan(&expired.ID, &expired.ResourceKey, &expired.MerchantID, &expired.Kind, &expired.Priority, &expired.NotBefore, &expired.RequestCount); err != nil {
 			rows.Close()
 			return domain.BrowserJob{}, false, err
 		}
+		expiredJobs = append(expiredJobs, expired)
+	}
+	if err = rows.Close(); err != nil {
+		return domain.BrowserJob{}, false, err
+	}
+	for _, expired := range expiredJobs {
 		var merged int64
 		err = tx.QueryRowContext(ctx, `UPDATE browser_jobs SET priority=GREATEST(priority,$1),not_before=LEAST(not_before,$2),request_count=request_count+$3,last_error='browser job lease expired; recovered' WHERE state='queued' AND resource_key=$4 AND merchant_id=$5 AND kind=$6 RETURNING 1`, expired.Priority, expired.NotBefore, expired.RequestCount, expired.ResourceKey, expired.MerchantID, expired.Kind).Scan(&merged)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -203,12 +210,8 @@ func (r *Repository) ClaimBrowserJob(ctx context.Context, owner string, now time
 			_, err = tx.ExecContext(ctx, `DELETE FROM browser_jobs WHERE id=$1`, expired.ID)
 		}
 		if err != nil {
-			rows.Close()
 			return domain.BrowserJob{}, false, err
 		}
-	}
-	if err = rows.Close(); err != nil {
-		return domain.BrowserJob{}, false, err
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM browser_jobs WHERE state IN ('succeeded','failed') AND completed_at < $1`, now.Add(-7*24*time.Hour)); err != nil {
 		return domain.BrowserJob{}, false, err
