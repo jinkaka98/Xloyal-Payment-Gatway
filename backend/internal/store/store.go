@@ -23,6 +23,7 @@ type Repository interface {
 	Tenant(context.Context, string) (domain.Tenant, error)
 	CreateTenant(context.Context, domain.Tenant) error
 	UpdateTenant(context.Context, domain.Tenant) error
+	DeleteTenant(context.Context, string, domain.AuditEvent) error
 	RotateTenantAPIKey(context.Context, string, string, string, string, domain.AuditEvent) error
 	ListTenants(context.Context) ([]domain.Tenant, error)
 	AssignTenantMerchant(context.Context, string, string) error
@@ -421,6 +422,16 @@ func (m *Memory) UpdateTenant(_ context.Context, v domain.Tenant) error {
 		v.UniqueAmountCooldownMinutes = current.UniqueAmountCooldownMinutes
 	}
 	m.tenants[v.ID] = v
+	return nil
+}
+func (m *Memory) DeleteTenant(_ context.Context, id string, audit domain.AuditEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[id]; !ok {
+		return ErrNotFound
+	}
+	delete(m.tenants, id)
+	m.audits = append(m.audits, audit)
 	return nil
 }
 func (m *Memory) RotateTenantAPIKey(_ context.Context, tenantID, expectedHash, hash, ciphertext string, audit domain.AuditEvent) error {

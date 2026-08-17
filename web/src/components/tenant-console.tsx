@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { BookOpen, Check, Copy, Eye, EyeOff, KeyRound, Monitor, Pencil, Plus, RefreshCw, Server, X } from "lucide-react";
+import { BookOpen, Check, Copy, Eye, EyeOff, KeyRound, Monitor, Pencil, Plus, RefreshCw, Server, Trash2, X } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { formatDate } from "@/lib/format";
@@ -35,6 +35,8 @@ export function TenantConsole({ initialTenants, merchants, qrisTemplates = [] }:
   const [error, setError] = useState("");
   const [created, setCreated] = useState<CreatedTenant | null>(null);
   const [copied, setCopied] = useState<"id" | "key" | "">("");
+  const [deleting, setDeleting] = useState("");
+  const [deleteError, setDeleteError] = useState("");
 
   function close() { setModal(null); setCreated(null); setError(""); setCopied(""); }
 
@@ -72,13 +74,29 @@ export function TenantConsole({ initialTenants, merchants, qrisTemplates = [] }:
     await navigator.clipboard.writeText(value); setCopied(field); window.setTimeout(() => setCopied(""), 1500);
   }
 
+  async function removeTenant(tenant: Tenant) {
+    if (!window.confirm(`Hapus tenant ${tenant.name}? Tenant akan hilang dari daftar dan API key langsung dinonaktifkan. Histori transaksi tetap tersimpan.`)) return;
+    setDeleting(tenant.id); setDeleteError("");
+    try {
+      const response = await fetch(`/api/admin/tenants/${encodeURIComponent(tenant.id)}`, { method: "DELETE" });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error ?? `Tenant gagal dihapus (${response.status}).`);
+      }
+      setTenants((current) => current.filter((item) => item.id !== tenant.id));
+      if (selected?.id === tenant.id) close();
+    } catch (cause) {
+      setDeleteError(cause instanceof Error ? cause.message : "Tenant gagal dihapus.");
+    } finally { setDeleting(""); }
+  }
+
   const selected = modal?.kind === "edit" || modal?.kind === "docs" ? modal.tenant : null;
   return <div className="page">
     <PageHeader eyebrow="Merchant / API access" title="Tenant ID" description="Kelola identitas aplikasi yang memakai API QRIS dan hubungkan setiap tenant ke browser Merchant untuk rekonsiliasi transaksi." actions={<button className="button button-primary" onClick={() => setModal({ kind: "create" })}><Plus size={17} />Tambah tenant</button>} />
     <section className="section-block">
-      <div className="section-heading"><div><span className="section-kicker">API directory</span><h2>Connected Tenant IDs</h2><p>{tenants.length} tenant terdaftar. Super admin dapat melihat kembali atau merotasi API key dari tombol edit.</p></div></div>
+      <div className="section-heading"><div><span className="section-kicker">API directory</span><h2>Connected Tenant IDs</h2><p>{tenants.length} tenant terdaftar. Super admin dapat melihat kembali, merotasi API key, atau menghapus tenant.</p>{deleteError && <p className="form-error" role="alert">{deleteError}</p>}</div></div>
       <div className="table-scroll"><table><thead><tr><th>Tenant</th><th>Merchant connection</th><th>Site tujuan</th><th>Callback & webhook</th><th>Dibuat</th><th>Status</th><th>Action</th></tr></thead><tbody>
-        {tenants.map((tenant) => <tr key={tenant.id}><td><strong>{tenant.name}</strong><span className="cell-subtitle"><code>{tenant.id}</code></span></td><td><code>{tenant.merchantId || "Belum terhubung"}</code></td><td>{tenant.siteUrl ? <a className="table-link" href={tenant.siteUrl} target="_blank" rel="noreferrer">{new URL(tenant.siteUrl).host}</a> : "Belum diatur"}</td><td><strong>{tenant.callbackUrl ? "Callback aktif" : "Tanpa callback"}</strong><span className="cell-subtitle">{tenant.webhookUrl ? "Webhook aktif" : "Webhook belum diatur"}</span></td><td>{formatDate(tenant.createdAt)}</td><td><StatusBadge status={tenant.active ? "active" : "inactive"} /><span className="cell-subtitle">{tenant.sandboxMode ? "Sandbox" : "Production"}</span></td><td><div className="row-actions"><button className="icon-button table-action" title="Edit tenant" aria-label={`Edit ${tenant.name}`} onClick={() => setModal({ kind: "edit", tenant })}><Pencil size={16} /></button><button className="icon-button table-action" title="Dokumentasi API" aria-label={`Dokumentasi ${tenant.name}`} onClick={() => setModal({ kind: "docs", tenant })}><BookOpen size={16} /></button></div></td></tr>)}
+        {tenants.map((tenant) => <tr key={tenant.id}><td><strong>{tenant.name}</strong><span className="cell-subtitle"><code>{tenant.id}</code></span></td><td><code>{tenant.merchantId || "Belum terhubung"}</code></td><td>{tenant.siteUrl ? <a className="table-link" href={tenant.siteUrl} target="_blank" rel="noreferrer">{new URL(tenant.siteUrl).host}</a> : "Belum diatur"}</td><td><strong>{tenant.callbackUrl ? "Callback tersimpan" : "Tanpa callback"}</strong><span className="cell-subtitle">{tenant.webhookUrl ? "Webhook tersimpan" : "Webhook belum diatur"}</span></td><td>{formatDate(tenant.createdAt)}</td><td><StatusBadge status={tenant.active ? "active" : "inactive"} /><span className="cell-subtitle">{tenant.sandboxMode ? "Sandbox" : "Production"}</span></td><td><div className="row-actions"><button className="icon-button table-action" title="Edit tenant" aria-label={`Edit ${tenant.name}`} onClick={() => setModal({ kind: "edit", tenant })}><Pencil size={16} /></button><button className="icon-button table-action" title="Dokumentasi API" aria-label={`Dokumentasi ${tenant.name}`} onClick={() => setModal({ kind: "docs", tenant })}><BookOpen size={16} /></button><button className="icon-button table-action tenant-delete-action" title="Hapus tenant" aria-label={`Hapus ${tenant.name}`} disabled={deleting === tenant.id} onClick={() => removeTenant(tenant)}><Trash2 size={16} /></button></div></td></tr>)}
       </tbody></table></div>
     </section>
     {modal && <div className="tenant-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}><section className={`tenant-modal ${modal.kind === "docs" ? "tenant-docs-modal" : ""}`} role="dialog" aria-modal="true" aria-labelledby="tenant-dialog-title">
@@ -187,5 +205,32 @@ function TenantDocumentation({ tenant, qrisTemplates }: { tenant: Tenant; qrisTe
     <div className="tenant-doc-endpoint"><strong><span>POST</span>Alias kompatibilitas QRIS</strong><code>{apiBase}/v1/tenants/{id}/qris/dynamic</code><p>Alias kompatibel untuk pembuatan transaksi. Integrasi baru disarankan memakai route <code>/transactions/qris</code>.</p></div>
     <div className="tenant-doc-endpoint"><strong><span>POST</span>Refresh history browser</strong><code>{apiBase}/v1/tenants/{id}/transactions/refresh</code><p>Request masuk melalui API, lalu backend mengantrekan worker browser internal untuk mengambil mutasi terbaru.</p></div>
     <div className="tenant-doc-endpoint"><strong><span>GET</span>Hasil transaksi tenant</strong><code>{apiBase}/v1/tenants/{id}/transactions?limit=100</code><p>Hanya mengembalikan transaksi portal yang berhasil dihubungkan ke invoice tenant ini.</p></div>
+    <div className="tenant-doc-endpoint">
+      <strong>Alur integrasi wajib</strong>
+      <ol className="tenant-doc-steps"><li>Ambil template QRIS aktif dari endpoint template.</li><li>Buat satu transaksi dengan nominal order dan idempotency key unik.</li><li>Tampilkan QR serta <code>payable_amount</code>, bukan hanya nominal request.</li><li>Polling URL status sesuai <code>poll_after_seconds</code> sampai <code>paid</code> atau <code>expired</code>.</li><li>Finalisasi order client hanya setelah status API menjadi <code>paid</code>.</li></ol>
+      <p>Sumber status order saat ini adalah polling endpoint status. Nilai Callback URL dan Webhook URL tersimpan sebagai konfigurasi tenant; jangan menunggu callback atau webhook untuk menyelesaikan order.</p>
+    </div>
+    <div className="tenant-doc-endpoint">
+      <strong>Kontrak request dan idempotency</strong>
+      <code>Idempotency-Key: ORDER_UNIQUE_ID</code>
+      <pre>{`curl -X POST '${apiBase}/v1/tenants/${id}/transactions/qris' \\
+  -H 'Content-Type: application/json' \\
+  -H 'X-API-Key: YOUR_API_KEY' \\
+  -H 'Idempotency-Key: ORDER_UNIQUE_ID' \\
+  -d '{"template_id":"${exampleTemplateID}","amount":50000,"expires_in_seconds":1800}'`}</pre>
+      <p><code>amount</code> memakai satuan Rupiah tanpa pemisah. <code>expires_in_seconds</code> opsional dengan rentang 60-1800. Key yang sama dengan body yang sama mengembalikan transaksi yang sama; body berbeda menghasilkan <code>409</code>.</p>
+      <pre>{`{
+  "id": "TRANSACTION_ID",
+  "status": "pending",
+  "requested_amount": 50000,
+  "payable_amount": ${tenant.useUniqueAmountCode ? 50037 : 50000},
+  "unique_amount_code": ${tenant.useUniqueAmountCode ? 37 : 0},
+  "status_url": "/v1/tenants/${id}/transactions/qris/TRANSACTION_ID",
+  "qr_url": "/v1/tenants/${id}/transactions/qris/TRANSACTION_ID/qr",
+  "poll_after_seconds": 15
+}`}</pre>
+    </div>
+    <div className="tenant-doc-endpoint"><strong>Siklus status dan polling</strong><p>Tunggu <code>poll_after_seconds</code> atau header <code>Retry-After</code> sebelum request berikutnya. Jalankan satu polling berurutan per transaksi, bukan request paralel.</p><ul className="tenant-doc-status-list"><li><code>pending</code><span>Pembayaran belum cocok; lanjut polling.</span></li><li><code>paid</code><span>Status final berhasil; simpan ID transaksi dan hentikan polling.</span></li><li><code>expired</code><span>Status final tidak dibayar; hentikan polling dan buat transaksi baru bila diperlukan.</span></li></ul></div>
+    <div className="tenant-doc-endpoint"><strong>Respons error penting</strong><ul className="tenant-doc-status-list"><li><code>400</code><span>Body, nominal, expiry, atau template ID tidak valid.</span></li><li><code>401</code><span>API key hilang atau tidak valid.</span></li><li><code>403</code><span>Origin browser tidak sesuai Site tujuan pada mode Production.</span></li><li><code>404</code><span>Template atau transaksi tidak tersedia untuk Tenant ID ini.</span></li><li><code>409</code><span>Idempotency key dipakai ulang dengan data berbeda atau nominal sedang bentrok.</span></li><li><code>429</code><span>Rate limit atau kode unik penuh; tunggu header <code>Retry-After</code>.</span></li></ul></div>
   </div>;
 }

@@ -441,6 +441,46 @@ func TestUpdateTenantKeepsAPIKeyAndChangesConnectivity(t *testing.T) {
 	}
 }
 
+func TestDeleteTenantArchivesAccessAndRetainsHistory(t *testing.T) {
+	repo := store.NewMemory()
+	ctx := context.Background()
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-delete", Name: "Delete me", APIKeyHash: security.HashSecret("delete-key"), Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-shared", AccessScope: "all_tenants"})
+	repo.CreateTestPayment(ctx, domain.TestPayment{ID: "payment-history", QRISTemplateID: "template-shared", TenantID: "tenant-delete", RequestSource: "tenant_api", Status: domain.InvoiceExpired})
+	h := Server{Repo: repo, AdminTokens: map[string]string{"admin": "super_admin"}}.Handler()
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/admin/tenants/tenant-delete", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("delete code=%d body=%s", w.Code, w.Body.String())
+	}
+	if _, err := repo.Tenant(ctx, "tenant-delete"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("deleted tenant still exists: %v", err)
+	}
+	payment, err := repo.TestPayment(ctx, "payment-history")
+	if err != nil || payment.TenantID != "tenant-delete" {
+		t.Fatalf("payment history was not retained: payment=%+v err=%v", payment, err)
+	}
+	if _, err := repo.TenantByAPIKey(ctx, security.HashSecret("delete-key")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("deleted tenant API key still authenticates: %v", err)
+	}
+
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-owned", Name: "Has resources", Active: true})
+	repo.CreateMerchantAccount(ctx, domain.MerchantAccount{ID: "account-owned", TenantID: "tenant-owned"})
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/admin/tenants/tenant-owned", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("owned-resource delete code=%d body=%s", w.Code, w.Body.String())
+	}
+	if _, err := repo.MerchantAccount(ctx, "tenant-owned", "account-owned"); err != nil {
+		t.Fatalf("tenant history resource was removed: %v", err)
+	}
+}
+
 func TestTenantRefreshAndTransactionHistoryAreIsolated(t *testing.T) {
 	repo := store.NewMemory()
 	ctx := context.Background()

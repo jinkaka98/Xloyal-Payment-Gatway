@@ -60,6 +60,7 @@ func (s Server) Handler() http.Handler {
 	m.HandleFunc("GET /admin/tenants", s.admin("viewer", s.listTenants))
 	m.HandleFunc("POST /admin/tenants", s.admin("super_admin", s.createTenant))
 	m.HandleFunc("PUT /admin/tenants/{id}", s.admin("super_admin", s.updateTenant))
+	m.HandleFunc("DELETE /admin/tenants/{id}", s.admin("super_admin", s.deleteTenant))
 	m.HandleFunc("GET /admin/tenants/{id}/credentials", s.admin("super_admin", s.revealTenantCredential))
 	m.HandleFunc("POST /admin/tenants/{id}/credentials/rotate", s.admin("super_admin", s.rotateTenantCredential))
 	m.HandleFunc("GET /admin/merchant-ids", s.admin("viewer", s.listMerchantIDs))
@@ -1243,6 +1244,20 @@ func (s Server) updateTenant(w http.ResponseWriter, r *http.Request, _ domain.Te
 	current.APIKeyCiphertext = ""
 	s.Repo.AppendAudit(r.Context(), domain.AuditEvent{ID: newID(), Actor: "admin", Action: "tenant.updated", ResourceType: "tenant", ResourceID: current.ID, TenantID: current.ID, CreatedAt: time.Now().UTC()})
 	write(w, http.StatusOK, current)
+}
+
+func (s Server) deleteTenant(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
+	id := r.PathValue("id")
+	audit := domain.AuditEvent{ID: newID(), TenantID: id, Actor: "admin", Action: "tenant.deleted", ResourceType: "tenant", ResourceID: id, CreatedAt: time.Now().UTC()}
+	if err := s.Repo.DeleteTenant(r.Context(), id, audit); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			problem(w, http.StatusNotFound, "not found")
+			return
+		}
+		problem(w, http.StatusInternalServerError, "delete tenant failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s Server) revealTenantCredential(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {

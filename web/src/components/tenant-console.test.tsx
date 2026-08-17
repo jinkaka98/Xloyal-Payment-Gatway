@@ -95,6 +95,31 @@ describe("TenantConsole credentials and documentation", () => {
     expect(screen.getByText(/^payable_amount:/)).toHaveTextContent("Rp10.037");
     expect(screen.getByText(/^unique_amount_code:/)).toHaveTextContent("37");
     expect(screen.getByText(/Bayar tepat/)).toHaveTextContent("Rp10.037");
+    expect(screen.getByText("Alur integrasi wajib")).toBeInTheDocument();
+    expect(screen.getByText(/Sumber status order saat ini/)).toHaveTextContent("polling endpoint status");
+    expect(screen.getAllByText(/Idempotency-Key/).length).toBeGreaterThan(0);
+  });
+
+  it("deletes a tenant after explicit confirmation", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+    render(<TenantConsole initialTenants={[tenant]} merchants={[]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Hapus Alpakyros LITE" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/admin/tenants/tenant_alpakyros_lite", expect.objectContaining({ method: "DELETE" })));
+    expect(screen.queryByText("Alpakyros LITE")).not.toBeInTheDocument();
+  });
+
+  it("keeps the tenant visible when deletion fails", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ error: "delete tenant failed" }), { status: 500 }));
+    render(<TenantConsole initialTenants={[tenant]} merchants={[]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Hapus Alpakyros LITE" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("delete tenant failed");
+    expect(screen.getByText("Alpakyros LITE")).toBeInTheDocument();
   });
 
   it("persists sandbox mode from edit and shows the updated state", async () => {

@@ -12,7 +12,7 @@ function resolvePath(method: string, parts: string[]) {
   if (parts.length === 1 && method === "GET" && resource && getResources.has(resource)) return `/admin/${resource}`;
   if (resource === "merchant-accounts" && parts.length === 2 && id && merchantID.test(id) && ["GET", "PUT"].includes(method)) return `/admin/merchant-accounts/${id}`;
   if (resource === "tenants" && parts.length === 1 && ["GET", "POST"].includes(method)) return "/admin/tenants";
-  if (resource === "tenants" && parts.length === 2 && id && merchantID.test(id) && method === "PUT") return `/admin/tenants/${id}`;
+  if (resource === "tenants" && parts.length === 2 && id && merchantID.test(id) && ["PUT", "DELETE"].includes(method)) return `/admin/tenants/${id}`;
   if (resource === "tenants" && parts.length === 3 && id && merchantID.test(id) && connection === "credentials" && method === "GET") return `/admin/tenants/${id}/credentials`;
   if (resource === "tenants" && parts.length === 4 && id && merchantID.test(id) && connection === "credentials" && action === "rotate" && method === "POST") return `/admin/tenants/${id}/credentials/rotate`;
   if (resource === "merchant-ids" && parts.length === 1 && method === "POST") return "/admin/merchant-ids";
@@ -38,3 +38,4 @@ async function proxy(request: Request, context: { params: Promise<{ path: string
 export const GET = proxy;
 export const POST = proxy;
 export const PUT = proxy;
+export const DELETE = proxy;
