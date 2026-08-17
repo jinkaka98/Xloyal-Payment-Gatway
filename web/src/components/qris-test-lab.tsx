@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { ChangeEvent, FormEvent, useEffect, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { Check, Copy, LoaderCircle, QrCode, Upload } from "lucide-react";
 import { formatCurrency, formatDate } from "@/lib/format";
 import type { QRISTemplate, TestPayment } from "@/lib/types";
@@ -24,22 +24,45 @@ export function QRISTestLab() {
   const [busy, setBusy] = useState<"upload" | "generate" | "">("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const reloadInFlight = useRef<Promise<void> | null>(null);
 
   const latest = payments[0];
   async function reload() {
-    const [nextTemplates, nextPayments] = await Promise.all([
-      jsonRequest<QRISTemplate[]>("/api/qris/templates"),
-      jsonRequest<TestPayment[]>("/api/qris/test-payments"),
-    ]);
-    setTemplates(nextTemplates);
-    setPayments(nextPayments);
-    setSelectedID((current) => current || nextTemplates[0]?.id || "");
+    if (reloadInFlight.current) return reloadInFlight.current;
+    const request = (async () => {
+      const [nextTemplates, nextPayments] = await Promise.all([
+        jsonRequest<QRISTemplate[]>("/api/qris/templates"),
+        jsonRequest<TestPayment[]>("/api/qris/test-payments"),
+      ]);
+      setTemplates(nextTemplates);
+      setPayments(nextPayments);
+      setSelectedID((current) => current || nextTemplates[0]?.id || "");
+    })();
+    reloadInFlight.current = request;
+    try {
+      await request;
+    } finally {
+      if (reloadInFlight.current === request) reloadInFlight.current = null;
+    }
   }
 
   useEffect(() => {
-    reload().catch((reason: Error) => setError(reason.message));
-    const timer = window.setInterval(() => reload().catch((reason: Error) => setError(reason.message)), 30_000);
-    return () => window.clearInterval(timer);
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        await reload();
+      } catch (reason) {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : "Polling failed");
+      } finally {
+        if (!cancelled) timer = window.setTimeout(poll, 30_000);
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, []);
 
   async function upload(event: FormEvent) {

@@ -11,6 +11,7 @@ export interface Tenant {
   webhookUrl: string;
   sandboxMode: boolean;
   useUniqueAmountCode?: boolean;
+  uniqueAmountCooldownMinutes?: number;
   active: boolean;
   apiKeyRecoverable?: boolean | undefined;
   createdAt: string;

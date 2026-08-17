@@ -22,22 +22,24 @@ func New(db *sql.DB) *Repository                       { return &Repository{DB: 
 func (r *Repository) Health(ctx context.Context) error { return r.DB.PingContext(ctx) }
 func (r *Repository) TenantByAPIKey(ctx context.Context, h string) (domain.Tenant, error) {
 	var v domain.Tenant
-	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),sandbox_mode,use_unique_amount_code,api_key_hash,COALESCE(api_key_ciphertext,''),active,created_at FROM tenants WHERE api_key_hash=$1 AND active=true`, h).Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.SandboxMode, &v.UseUniqueAmountCode, &v.APIKeyHash, &v.APIKeyCiphertext, &v.Active, &v.CreatedAt)
+	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),sandbox_mode,use_unique_amount_code,unique_amount_cooldown_minutes,api_key_hash,COALESCE(api_key_ciphertext,''),active,created_at FROM tenants WHERE api_key_hash=$1 AND active=true`, h).Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.SandboxMode, &v.UseUniqueAmountCode, &v.UniqueAmountCooldownMinutes, &v.APIKeyHash, &v.APIKeyCiphertext, &v.Active, &v.CreatedAt)
 	v.APIKeyRecoverable = v.APIKeyCiphertext != ""
 	return v, notFound(err)
 }
 func (r *Repository) Tenant(ctx context.Context, id string) (domain.Tenant, error) {
 	var v domain.Tenant
-	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),sandbox_mode,use_unique_amount_code,api_key_hash,COALESCE(api_key_ciphertext,''),active,created_at FROM tenants WHERE id=$1`, id).Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.SandboxMode, &v.UseUniqueAmountCode, &v.APIKeyHash, &v.APIKeyCiphertext, &v.Active, &v.CreatedAt)
+	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),sandbox_mode,use_unique_amount_code,unique_amount_cooldown_minutes,api_key_hash,COALESCE(api_key_ciphertext,''),active,created_at FROM tenants WHERE id=$1`, id).Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.SandboxMode, &v.UseUniqueAmountCode, &v.UniqueAmountCooldownMinutes, &v.APIKeyHash, &v.APIKeyCiphertext, &v.Active, &v.CreatedAt)
 	v.APIKeyRecoverable = v.APIKeyCiphertext != ""
 	return v, notFound(err)
 }
 func (r *Repository) CreateTenant(ctx context.Context, v domain.Tenant) error {
-	_, err := r.DB.ExecContext(ctx, `INSERT INTO tenants(id,merchant_id,name,site_url,callback_url,webhook_url,sandbox_mode,use_unique_amount_code,api_key_hash,api_key_ciphertext,active,created_at) VALUES($1,NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,$8,$9,NULLIF($10,''),$11,$12)`, v.ID, v.MerchantID, v.Name, v.SiteURL, v.CallbackURL, v.WebhookURL, v.SandboxMode, v.UseUniqueAmountCode, v.APIKeyHash, v.APIKeyCiphertext, v.Active, v.CreatedAt)
+	v.UniqueAmountCooldownMinutes = normalizedCooldownMinutes(v.UniqueAmountCooldownMinutes)
+	_, err := r.DB.ExecContext(ctx, `INSERT INTO tenants(id,merchant_id,name,site_url,callback_url,webhook_url,sandbox_mode,use_unique_amount_code,unique_amount_cooldown_minutes,api_key_hash,api_key_ciphertext,active,created_at) VALUES($1,NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,$8,$9,$10,NULLIF($11,''),$12,$13)`, v.ID, v.MerchantID, v.Name, v.SiteURL, v.CallbackURL, v.WebhookURL, v.SandboxMode, v.UseUniqueAmountCode, v.UniqueAmountCooldownMinutes, v.APIKeyHash, v.APIKeyCiphertext, v.Active, v.CreatedAt)
 	return err
 }
 func (r *Repository) UpdateTenant(ctx context.Context, v domain.Tenant) error {
-	res, err := r.DB.ExecContext(ctx, `UPDATE tenants SET merchant_id=NULLIF($1,''),name=$2,site_url=NULLIF($3,''),callback_url=NULLIF($4,''),webhook_url=NULLIF($5,''),sandbox_mode=$6,use_unique_amount_code=$7,active=$8 WHERE id=$9`, v.MerchantID, v.Name, v.SiteURL, v.CallbackURL, v.WebhookURL, v.SandboxMode, v.UseUniqueAmountCode, v.Active, v.ID)
+	v.UniqueAmountCooldownMinutes = normalizedCooldownMinutes(v.UniqueAmountCooldownMinutes)
+	res, err := r.DB.ExecContext(ctx, `UPDATE tenants SET merchant_id=NULLIF($1,''),name=$2,site_url=NULLIF($3,''),callback_url=NULLIF($4,''),webhook_url=NULLIF($5,''),sandbox_mode=$6,use_unique_amount_code=$7,unique_amount_cooldown_minutes=$8,active=$9 WHERE id=$10`, v.MerchantID, v.Name, v.SiteURL, v.CallbackURL, v.WebhookURL, v.SandboxMode, v.UseUniqueAmountCode, v.UniqueAmountCooldownMinutes, v.Active, v.ID)
 	if err != nil {
 		return err
 	}
@@ -81,7 +83,7 @@ func (r *Repository) RotateTenantAPIKey(ctx context.Context, tenantID, expectedH
 	return tx.Commit()
 }
 func (r *Repository) ListTenants(ctx context.Context) ([]domain.Tenant, error) {
-	rows, err := r.DB.QueryContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),sandbox_mode,use_unique_amount_code,api_key_hash,COALESCE(api_key_ciphertext,''),active,created_at FROM tenants ORDER BY created_at DESC`)
+	rows, err := r.DB.QueryContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),sandbox_mode,use_unique_amount_code,unique_amount_cooldown_minutes,api_key_hash,COALESCE(api_key_ciphertext,''),active,created_at FROM tenants ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +91,7 @@ func (r *Repository) ListTenants(ctx context.Context) ([]domain.Tenant, error) {
 	out := make([]domain.Tenant, 0)
 	for rows.Next() {
 		var v domain.Tenant
-		if err := rows.Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.SandboxMode, &v.UseUniqueAmountCode, &v.APIKeyHash, &v.APIKeyCiphertext, &v.Active, &v.CreatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.SandboxMode, &v.UseUniqueAmountCode, &v.UniqueAmountCooldownMinutes, &v.APIKeyHash, &v.APIKeyCiphertext, &v.Active, &v.CreatedAt); err != nil {
 			return nil, err
 		}
 		v.APIKeyRecoverable = v.APIKeyCiphertext != ""
@@ -157,6 +159,83 @@ func (r *Repository) ListDueMerchantConnections(ctx context.Context, due time.Ti
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+const browserJobColumns = `id,resource_key,merchant_id,kind,priority,state,not_before,requested_at,request_count,attempt,lease_owner,lease_until,started_at,completed_at,last_error`
+
+func (r *Repository) EnqueueBrowserJob(ctx context.Context, job domain.BrowserJob) (domain.BrowserJob, bool, error) {
+	if job.State == "" {
+		job.State = "queued"
+	}
+	if job.RequestCount == 0 {
+		job.RequestCount = 1
+	}
+	var created bool
+	query := `INSERT INTO browser_jobs(` + browserJobColumns + `) VALUES($1,$2,$3,$4,$5,'queued',$6,$7,$8,0,'',NULL,NULL,NULL,'')
+		ON CONFLICT(resource_key,merchant_id,kind) WHERE state='queued' DO UPDATE SET
+		priority=GREATEST(browser_jobs.priority,EXCLUDED.priority),not_before=LEAST(browser_jobs.not_before,EXCLUDED.not_before),request_count=browser_jobs.request_count+1
+		RETURNING ` + browserJobColumns + `,(xmax=0)`
+	err := r.DB.QueryRowContext(ctx, query, job.ID, job.ResourceKey, job.MerchantID, job.Kind, job.Priority, job.NotBefore, job.RequestedAt, job.RequestCount).Scan(&job.ID, &job.ResourceKey, &job.MerchantID, &job.Kind, &job.Priority, &job.State, &job.NotBefore, &job.RequestedAt, &job.RequestCount, &job.Attempt, &job.LeaseOwner, &job.LeaseUntil, &job.StartedAt, &job.CompletedAt, &job.LastError, &created)
+	return job, created, err
+}
+
+func (r *Repository) ClaimBrowserJob(ctx context.Context, owner string, now time.Time, lease time.Duration) (domain.BrowserJob, bool, error) {
+	tx, err := r.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.BrowserJob{}, false, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE browser_jobs SET state='queued',lease_owner='',lease_until=NULL,not_before=$1,last_error='browser job lease expired; recovered' WHERE state='running' AND lease_until <= $1`, now); err != nil {
+		return domain.BrowserJob{}, false, err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM browser_jobs WHERE state IN ('succeeded','failed') AND completed_at < $1`, now.Add(-7*24*time.Hour)); err != nil {
+		return domain.BrowserJob{}, false, err
+	}
+	var job domain.BrowserJob
+	err = tx.QueryRowContext(ctx, `SELECT `+browserJobColumns+` FROM browser_jobs candidate WHERE state='queued' AND not_before <= $1 AND NOT EXISTS (SELECT 1 FROM browser_jobs running WHERE running.resource_key=candidate.resource_key AND running.state='running') ORDER BY priority DESC,not_before,requested_at,id FOR UPDATE SKIP LOCKED LIMIT 1`, now).Scan(&job.ID, &job.ResourceKey, &job.MerchantID, &job.Kind, &job.Priority, &job.State, &job.NotBefore, &job.RequestedAt, &job.RequestCount, &job.Attempt, &job.LeaseOwner, &job.LeaseUntil, &job.StartedAt, &job.CompletedAt, &job.LastError)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.BrowserJob{}, false, nil
+	}
+	if err != nil {
+		return domain.BrowserJob{}, false, err
+	}
+	leaseUntil := now.Add(lease)
+	err = tx.QueryRowContext(ctx, `UPDATE browser_jobs SET state='running',lease_owner=$1,lease_until=$2,started_at=$3,completed_at=NULL,attempt=attempt+1 WHERE id=$4 AND state='queued' RETURNING `+browserJobColumns, owner, leaseUntil, now, job.ID).Scan(&job.ID, &job.ResourceKey, &job.MerchantID, &job.Kind, &job.Priority, &job.State, &job.NotBefore, &job.RequestedAt, &job.RequestCount, &job.Attempt, &job.LeaseOwner, &job.LeaseUntil, &job.StartedAt, &job.CompletedAt, &job.LastError)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "browser_jobs_running_resource_idx" {
+			return domain.BrowserJob{}, false, nil
+		}
+		return domain.BrowserJob{}, false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return domain.BrowserJob{}, false, err
+	}
+	return job, true, nil
+}
+
+func (r *Repository) CompleteBrowserJob(ctx context.Context, id, owner string, completedAt time.Time) error {
+	res, err := r.DB.ExecContext(ctx, `UPDATE browser_jobs SET state='succeeded',completed_at=$1,lease_owner='',lease_until=NULL,last_error='' WHERE id=$2 AND state='running' AND lease_owner=$3`, completedAt, id, owner)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return store.ErrConflict
+	}
+	return nil
+}
+
+func (r *Repository) FailBrowserJob(ctx context.Context, id, owner string, completedAt time.Time, message string) error {
+	res, err := r.DB.ExecContext(ctx, `UPDATE browser_jobs SET state='failed',completed_at=$1,lease_owner='',lease_until=NULL,last_error=$2 WHERE id=$3 AND state='running' AND lease_owner=$4`, completedAt, message, id, owner)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return store.ErrConflict
+	}
+	return nil
 }
 func (r *Repository) CreatePortalTransaction(ctx context.Context, v domain.PortalTransaction) error {
 	_, err := r.DB.ExecContext(ctx, `INSERT INTO portal_transactions(id,merchant_id,tenant_id,reference,amount,status,paid_at,source,match_confidence,invoice_id,created_at) VALUES($1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,$9,NULLIF($10,''),$11) ON CONFLICT(merchant_id,reference) DO UPDATE SET amount=EXCLUDED.amount,status=EXCLUDED.status,paid_at=EXCLUDED.paid_at,source=EXCLUDED.source,tenant_id=COALESCE(portal_transactions.tenant_id,EXCLUDED.tenant_id),invoice_id=COALESCE(portal_transactions.invoice_id,EXCLUDED.invoice_id),match_confidence=CASE WHEN portal_transactions.tenant_id IS NULL THEN EXCLUDED.match_confidence ELSE portal_transactions.match_confidence END`, v.ID, v.MerchantID, v.TenantID, v.Reference, v.Amount, v.Status, v.PaidAt, v.Source, v.MatchConfidence, v.InvoiceID, v.CreatedAt)
@@ -355,6 +434,101 @@ func (r *Repository) AllowQRISRequest(ctx context.Context, templateID, tenantID 
 	}
 	return count <= max, retry, err
 }
+
+type uniqueAmountReservation struct {
+	PaymentID       string
+	TenantID        string
+	MerchantID      string
+	PayableAmount   int64
+	Code            int64
+	CooldownMinutes int
+	CooldownUntil   time.Time
+}
+
+func cleanupUniqueAmountCooldowns(ctx context.Context, tx *sql.Tx, now time.Time) error {
+	rows, err := tx.QueryContext(ctx, `SELECT payment_id,COALESCE(tenant_id,''),merchant_id,payable_amount,unique_amount_code,cooldown_minutes,cooldown_until FROM qris_unique_amount_reservations WHERE state='cooldown' AND cooldown_until <= $1 FOR UPDATE`, now)
+	if err != nil {
+		return err
+	}
+	reservations := make([]uniqueAmountReservation, 0)
+	for rows.Next() {
+		var reservation uniqueAmountReservation
+		if err := rows.Scan(&reservation.PaymentID, &reservation.TenantID, &reservation.MerchantID, &reservation.PayableAmount, &reservation.Code, &reservation.CooldownMinutes, &reservation.CooldownUntil); err != nil {
+			rows.Close()
+			return err
+		}
+		reservations = append(reservations, reservation)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, reservation := range reservations {
+		metadata := map[string]any{"merchant_id": reservation.MerchantID, "code": reservation.Code, "payable_amount": reservation.PayableAmount, "cooldown_until": reservation.CooldownUntil}
+		if err := insertUniqueAmountAudit(ctx, tx, "qris-code-cooldown-ended-"+reservation.PaymentID, reservation.TenantID, "qris.unique_amount.cooldown_ended", reservation.PaymentID, metadata, reservation.CooldownUntil); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM qris_unique_amount_reservations WHERE payment_id=$1 AND state='cooldown'`, reservation.PaymentID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func reserveUniqueAmount(ctx context.Context, tx *sql.Tx, payment domain.TestPayment, now time.Time) error {
+	if err := cleanupUniqueAmountCooldowns(ctx, tx, now); err != nil {
+		return err
+	}
+	cooldownMinutes := 30
+	if payment.TenantID != "" {
+		if err := tx.QueryRowContext(ctx, `SELECT unique_amount_cooldown_minutes FROM tenants WHERE id=$1`, payment.TenantID).Scan(&cooldownMinutes); err != nil {
+			return err
+		}
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO qris_unique_amount_reservations(payment_id,tenant_id,merchant_id,payable_amount,expires_at,unique_amount_code,state,reserved_at,cooldown_minutes) VALUES($1,NULLIF($2,''),$3,$4,$5,$6,'active',$7,$8)`, payment.ID, payment.TenantID, payment.MerchantID, payment.PayableAmount, payment.ExpiresAt, payment.UniqueAmountCode, payment.CreatedAt, cooldownMinutes)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "qris_unique_amount_reservations_merchant_payable_key" {
+			return store.ErrUniqueAmountUnavailable
+		}
+		return err
+	}
+	if payment.UniqueAmountCode == 0 {
+		return nil
+	}
+	metadata := map[string]any{"merchant_id": payment.MerchantID, "code": payment.UniqueAmountCode, "payable_amount": payment.PayableAmount, "reserved_at": payment.CreatedAt, "cooldown_minutes": cooldownMinutes}
+	return insertUniqueAmountAudit(ctx, tx, "qris-code-reserved-"+payment.ID, payment.TenantID, "qris.unique_amount.reserved", payment.ID, metadata, payment.CreatedAt)
+}
+
+func startUniqueAmountCooldown(ctx context.Context, tx *sql.Tx, payment domain.TestPayment) error {
+	var reservation uniqueAmountReservation
+	err := tx.QueryRowContext(ctx, `SELECT payment_id,COALESCE(tenant_id,''),merchant_id,payable_amount,unique_amount_code,cooldown_minutes FROM qris_unique_amount_reservations WHERE payment_id=$1 FOR UPDATE`, payment.ID).Scan(&reservation.PaymentID, &reservation.TenantID, &reservation.MerchantID, &reservation.PayableAmount, &reservation.Code, &reservation.CooldownMinutes)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if reservation.Code == 0 || (payment.Status != domain.InvoicePaid && payment.Status != domain.InvoiceExpired) {
+		_, err = tx.ExecContext(ctx, `DELETE FROM qris_unique_amount_reservations WHERE payment_id=$1`, payment.ID)
+		return err
+	}
+	reservation.CooldownUntil = payment.UpdatedAt.Add(time.Duration(reservation.CooldownMinutes) * time.Minute)
+	if _, err = tx.ExecContext(ctx, `UPDATE qris_unique_amount_reservations SET state='cooldown',terminal_status=$1,terminal_at=$2,cooldown_until=$3 WHERE payment_id=$4`, payment.Status, payment.UpdatedAt, reservation.CooldownUntil, payment.ID); err != nil {
+		return err
+	}
+	metadata := map[string]any{"merchant_id": reservation.MerchantID, "code": reservation.Code, "payable_amount": reservation.PayableAmount, "terminal_status": payment.Status, "terminal_at": payment.UpdatedAt, "cooldown_until": reservation.CooldownUntil}
+	return insertUniqueAmountAudit(ctx, tx, "qris-code-cooldown-"+payment.ID, reservation.TenantID, "qris.unique_amount.cooldown_started", payment.ID, metadata, payment.UpdatedAt)
+}
+
+func insertUniqueAmountAudit(ctx context.Context, tx *sql.Tx, id, tenantID, action, paymentID string, metadata map[string]any, createdAt time.Time) error {
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO audit_events(id,tenant_id,actor,action,resource_type,resource_id,metadata,created_at) VALUES($1,NULLIF($2,''),'system',$3,'unique_amount_code',$4,$5,$6) ON CONFLICT(id) DO NOTHING`, id, tenantID, action, paymentID, raw, createdAt)
+	return err
+}
+
 func (r *Repository) CreateTestPayment(ctx context.Context, v domain.TestPayment) error {
 	if v.PayableAmount <= 0 {
 		v.PayableAmount = v.Amount
@@ -368,9 +542,6 @@ func (r *Repository) CreateTestPayment(ctx context.Context, v domain.TestPayment
 		return err
 	}
 	if v.Status == domain.InvoicePending && v.MerchantID != "" && (v.RequestSource == "tenant_api" || v.RequestSource == "admin_qris_test") {
-		if _, err = tx.ExecContext(ctx, `DELETE FROM qris_unique_amount_reservations WHERE expires_at <= $1`, v.CreatedAt); err != nil {
-			return err
-		}
 		var overlap bool
 		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM test_payments WHERE id<>$1 AND merchant_id=$2 AND payable_amount=$3 AND status='pending' AND expires_at>$4)`, v.ID, v.MerchantID, v.PayableAmount, v.CreatedAt).Scan(&overlap); err != nil {
 			return err
@@ -378,11 +549,7 @@ func (r *Repository) CreateTestPayment(ctx context.Context, v domain.TestPayment
 		if overlap {
 			return store.ErrUniqueAmountUnavailable
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO qris_unique_amount_reservations(payment_id,merchant_id,payable_amount,expires_at) VALUES($1,$2,$3,$4)`, v.ID, v.MerchantID, v.PayableAmount, v.ExpiresAt); err != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "qris_unique_amount_reservations_merchant_payable_key" {
-				return store.ErrUniqueAmountUnavailable
-			}
+		if err = reserveUniqueAmount(ctx, tx, v, v.CreatedAt); err != nil {
 			return err
 		}
 	}
@@ -440,7 +607,7 @@ func (r *Repository) CreateTenantTestPayment(ctx context.Context, v domain.TestP
 		return domain.TestPayment{}, false, false, 0, err
 	}
 	if n == 1 {
-		if _, err = tx.ExecContext(ctx, `DELETE FROM qris_unique_amount_reservations WHERE expires_at <= $1`, now); err != nil {
+		if err = cleanupUniqueAmountCooldowns(ctx, tx, now); err != nil {
 			return domain.TestPayment{}, false, false, 0, err
 		}
 		var legacyOverlap bool
@@ -450,12 +617,7 @@ func (r *Repository) CreateTenantTestPayment(ctx context.Context, v domain.TestP
 		if legacyOverlap {
 			return domain.TestPayment{}, false, false, 0, store.ErrUniqueAmountUnavailable
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO qris_unique_amount_reservations(payment_id,merchant_id,payable_amount,expires_at) VALUES($1,$2,$3,$4)`, v.ID, v.MerchantID, v.PayableAmount, v.ExpiresAt)
-		if err != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "qris_unique_amount_reservations_merchant_payable_key" {
-				return domain.TestPayment{}, false, false, 0, store.ErrUniqueAmountUnavailable
-			}
+		if err = reserveUniqueAmount(ctx, tx, v, now); err != nil {
 			return domain.TestPayment{}, false, false, 0, err
 		}
 	}
@@ -502,7 +664,7 @@ func (r *Repository) UpdatePendingTestPayment(ctx context.Context, v domain.Test
 		return false, nil
 	}
 	if v.Status != domain.InvoicePending {
-		if _, err = tx.ExecContext(ctx, `DELETE FROM qris_unique_amount_reservations WHERE payment_id=$1`, v.ID); err != nil {
+		if err = startUniqueAmountCooldown(ctx, tx, v); err != nil {
 			return false, err
 		}
 	}
@@ -531,7 +693,7 @@ func (r *Repository) MatchPendingTestPayment(ctx context.Context, v domain.TestP
 	if err != nil {
 		return false, err
 	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM qris_unique_amount_reservations WHERE payment_id=$1`, v.ID); err != nil {
+	if err = startUniqueAmountCooldown(ctx, tx, v); err != nil {
 		return false, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -555,27 +717,56 @@ func (r *Repository) PendingTestPayments(ctx context.Context, due time.Time, lim
 	}
 	return out, rows.Err()
 }
+func (r *Repository) PendingConnectedTestPayments(ctx context.Context, due time.Time, limit int) ([]domain.TestPayment, error) {
+	rows, err := r.DB.QueryContext(ctx, testPaymentColumns+` WHERE test_payments.status='pending' AND test_payments.next_check_at IS NOT NULL AND test_payments.next_check_at <= $1 AND EXISTS (SELECT 1 FROM merchant_connections WHERE merchant_connections.merchant_id=test_payments.merchant_id AND merchant_connections.status='connected') ORDER BY test_payments.next_check_at,test_payments.created_at,test_payments.id LIMIT $2`, due, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.TestPayment, 0)
+	for rows.Next() {
+		v, scanErr := scanTestPayment(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
 func (r *Repository) ExpirePendingTestPayments(ctx context.Context, now time.Time) (int64, error) {
 	tx, err := r.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `UPDATE test_payments SET status='expired',match_confidence='expired_no_match',updated_at=$1,next_check_at=NULL WHERE status='pending' AND expires_at <= $1`, now)
+	rows, err := tx.QueryContext(ctx, `UPDATE test_payments SET status='expired',match_confidence='expired_no_match',updated_at=$1,next_check_at=NULL WHERE status='pending' AND expires_at <= $1 RETURNING id,COALESCE(tenant_id,''),COALESCE(merchant_id,''),amount,payable_amount,unique_amount_code,status,updated_at`, now)
 	if err != nil {
 		return 0, err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
+	expired := make([]domain.TestPayment, 0)
+	for rows.Next() {
+		var payment domain.TestPayment
+		if err := rows.Scan(&payment.ID, &payment.TenantID, &payment.MerchantID, &payment.Amount, &payment.PayableAmount, &payment.UniqueAmountCode, &payment.Status, &payment.UpdatedAt); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		expired = append(expired, payment)
+	}
+	if err := rows.Close(); err != nil {
 		return 0, err
 	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM qris_unique_amount_reservations WHERE expires_at <= $1`, now); err != nil {
+	for _, payment := range expired {
+		if err := startUniqueAmountCooldown(ctx, tx, payment); err != nil {
+			return 0, err
+		}
+	}
+	if err := cleanupUniqueAmountCooldowns(ctx, tx, now); err != nil {
 		return 0, err
 	}
 	if err = tx.Commit(); err != nil {
 		return 0, err
 	}
-	return n, nil
+	return int64(len(expired)), nil
 }
 func (r *Repository) ListTestPayments(ctx context.Context, limit int) ([]domain.TestPayment, error) {
 	rows, err := r.DB.QueryContext(ctx, testPaymentColumns+` ORDER BY created_at DESC LIMIT $1`, limit)
@@ -684,4 +875,11 @@ func null(v string) any {
 		return nil
 	}
 	return v
+}
+
+func normalizedCooldownMinutes(minutes int) int {
+	if minutes < 30 || minutes > 60 {
+		return 30
+	}
+	return minutes
 }

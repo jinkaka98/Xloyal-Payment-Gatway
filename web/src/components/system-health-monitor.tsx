@@ -56,9 +56,14 @@ export function SystemHealthMonitor() {
   }, []);
 
   useEffect(() => {
-    void runChecks();
-    const interval = window.setInterval(() => void runChecks(), 15000);
-    return () => window.clearInterval(interval);
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      await runChecks();
+      if (!cancelled) timer = window.setTimeout(poll, 15000);
+    };
+    void poll();
+    return () => { cancelled = true; if (timer !== undefined) window.clearTimeout(timer); };
   }, [runChecks]);
 
   const rail = useMemo(() => railIDs.map((id) => snapshot?.checks.find((item) => item.id === id)).filter((item): item is ProviderHealth => Boolean(item)), [snapshot]);

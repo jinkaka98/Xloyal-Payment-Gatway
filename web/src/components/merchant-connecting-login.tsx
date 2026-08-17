@@ -36,7 +36,12 @@ export function MerchantConnectingLogin({ merchantID }: { merchantID: string }) 
         if (cancelled) return;
         setPhase("login");
         setDetail("Selesaikan login dan reCAPTCHA pada jendela browser portal yang terbuka.");
-        timer = window.setInterval(() => void checkConnection(), 1500);
+        const poll = async () => {
+          if (cancelled) return;
+          await checkConnection();
+          if (!cancelled) timer = window.setTimeout(poll, 1500);
+        };
+        void poll();
       } catch (error) {
         if (cancelled) return;
         setPhase("error");
@@ -50,7 +55,7 @@ export function MerchantConnectingLogin({ merchantID }: { merchantID: string }) 
         if (cancelled) return;
 
         if (connection.status === "connected") {
-          if (timer) window.clearInterval(timer);
+          if (timer) window.clearTimeout(timer);
           setPhase("complete");
           setDetail("Login berhasil dan Merchant Connecting sudah stabil.");
           window.history.replaceState(null, "", `/merchant-connecting/login?merchant_id=${encodeURIComponent(merchantID)}&completed=1`);
@@ -69,7 +74,7 @@ export function MerchantConnectingLogin({ merchantID }: { merchantID: string }) 
         }
 
         if (connection.last_error?.startsWith("Manual browser login failed:")) {
-          if (timer) window.clearInterval(timer);
+          if (timer) window.clearTimeout(timer);
           setPhase("error");
           setDetail(connection.last_error);
         }
@@ -81,7 +86,7 @@ export function MerchantConnectingLogin({ merchantID }: { merchantID: string }) 
     void start();
     return function stopPolling() {
       cancelled = true;
-      if (timer) window.clearInterval(timer);
+      if (timer) window.clearTimeout(timer);
     };
   }, [merchantID]);
 

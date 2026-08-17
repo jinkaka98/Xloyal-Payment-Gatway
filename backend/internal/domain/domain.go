@@ -48,19 +48,20 @@ func (i *Invoice) Transition(next InvoiceStatus, now time.Time) error {
 }
 
 type Tenant struct {
-	ID                  string    `json:"id"`
-	MerchantID          string    `json:"merchant_id,omitempty"`
-	Name                string    `json:"name"`
-	SiteURL             string    `json:"site_url,omitempty"`
-	CallbackURL         string    `json:"callback_url,omitempty"`
-	WebhookURL          string    `json:"webhook_url,omitempty"`
-	SandboxMode         bool      `json:"sandbox_mode"`
-	UseUniqueAmountCode bool      `json:"use_unique_amount_code"`
-	APIKeyHash          string    `json:"-"`
-	APIKeyCiphertext    string    `json:"-"`
-	APIKeyRecoverable   bool      `json:"api_key_recoverable"`
-	Active              bool      `json:"active"`
-	CreatedAt           time.Time `json:"created_at"`
+	ID                          string    `json:"id"`
+	MerchantID                  string    `json:"merchant_id,omitempty"`
+	Name                        string    `json:"name"`
+	SiteURL                     string    `json:"site_url,omitempty"`
+	CallbackURL                 string    `json:"callback_url,omitempty"`
+	WebhookURL                  string    `json:"webhook_url,omitempty"`
+	SandboxMode                 bool      `json:"sandbox_mode"`
+	UseUniqueAmountCode         bool      `json:"use_unique_amount_code"`
+	UniqueAmountCooldownMinutes int       `json:"unique_amount_cooldown_minutes"`
+	APIKeyHash                  string    `json:"-"`
+	APIKeyCiphertext            string    `json:"-"`
+	APIKeyRecoverable           bool      `json:"api_key_recoverable"`
+	Active                      bool      `json:"active"`
+	CreatedAt                   time.Time `json:"created_at"`
 }
 type MerchantID struct {
 	ID                    string    `json:"id"`
@@ -89,6 +90,24 @@ type MerchantConnection struct {
 	HistoryBackfilledAt         *time.Time       `json:"history_backfilled_at,omitempty"`
 	LastError                   string           `json:"last_error,omitempty"`
 	UpdatedAt                   time.Time        `json:"updated_at"`
+}
+
+type BrowserJob struct {
+	ID           string     `json:"id"`
+	ResourceKey  string     `json:"resource_key"`
+	MerchantID   string     `json:"merchant_id,omitempty"`
+	Kind         string     `json:"kind"`
+	Priority     int        `json:"priority"`
+	State        string     `json:"state"`
+	NotBefore    time.Time  `json:"not_before"`
+	RequestedAt  time.Time  `json:"requested_at"`
+	RequestCount int        `json:"request_count"`
+	Attempt      int        `json:"attempt"`
+	LeaseOwner   string     `json:"lease_owner,omitempty"`
+	LeaseUntil   *time.Time `json:"lease_until,omitempty"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	CompletedAt  *time.Time `json:"completed_at,omitempty"`
+	LastError    string     `json:"last_error,omitempty"`
 }
 
 type PortalTransaction struct {

@@ -2,6 +2,10 @@ package worker
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -13,13 +17,16 @@ import (
 
 const PollInterval = time.Minute
 const MerchantSyncInterval = 5 * time.Minute
-const MerchantQueuePollInterval = 5 * time.Second
+const MerchantQueuePollInterval = time.Minute
 const MaxChecks = 30
 const MaxAge = 30 * time.Minute
 const TestPaymentMatchWindow = 10 * time.Minute
 const TestPaymentPollInterval = 30 * time.Second
 const TestPaymentQueuePollInterval = 5 * time.Second
 const MerchantSyncTimeout = 11 * time.Minute
+const TestPaymentBatchSize = 500
+const BrowserJobLease = 13 * time.Minute
+const BrowserJobPollInterval = time.Second
 
 type MerchantSync func(context.Context, domain.MerchantConnection) ([]domain.PortalTransaction, error)
 
@@ -27,7 +34,10 @@ type Worker struct {
 	Repo         store.Repository
 	Gateway      gateway.Service
 	SyncMerchant MerchantSync
+	ManualLogin  func(context.Context, domain.MerchantConnection) error
 	Now          func() time.Time
+	Logger       *slog.Logger
+	JobOwner     string
 }
 
 func (w Worker) RunOnce(ctx context.Context) error {
@@ -210,12 +220,18 @@ func (w Worker) checkTestPayments(ctx context.Context, now time.Time) error {
 }
 
 func (w Worker) checkTestPaymentsForMerchants(ctx context.Context, now time.Time, syncedMerchants map[string]struct{}) error {
-	items, err := w.Repo.PendingTestPayments(ctx, now, 100)
+	var items []domain.TestPayment
+	var err error
+	if syncedMerchants != nil {
+		items, err = w.Repo.PendingConnectedTestPayments(ctx, now, TestPaymentBatchSize)
+	} else {
+		items, err = w.Repo.PendingTestPayments(ctx, now, TestPaymentBatchSize)
+	}
 	if err != nil {
 		return err
 	}
 	claimedTransactionIDs := make(map[string]struct{})
-	allPayments, err := w.Repo.ListTestPayments(ctx, 1000)
+	allPayments, err := w.Repo.ListTestPayments(ctx, TestPaymentBatchSize*10)
 	if err != nil {
 		return err
 	}
@@ -359,8 +375,9 @@ func payableAmount(payment domain.TestPayment) int64 {
 }
 
 func (w Worker) validateTestPayments(ctx context.Context) error {
+	cycleStarted := time.Now()
 	startedAt := w.now()
-	items, err := w.Repo.PendingTestPayments(ctx, startedAt, 100)
+	items, err := w.Repo.PendingConnectedTestPayments(ctx, startedAt, TestPaymentBatchSize)
 	if err != nil {
 		return err
 	}
@@ -412,7 +429,15 @@ func (w Worker) validateTestPayments(ctx context.Context) error {
 			return err
 		}
 	}
-	return expireRemaining(completedAt)
+	if err := expireRemaining(completedAt); err != nil {
+		return err
+	}
+	w.logger().Info("qris validation cycle completed",
+		"queued_payments", len(items),
+		"merchants", len(queuedMerchants),
+		"duration_ms", time.Since(cycleStarted).Milliseconds(),
+	)
+	return nil
 }
 func transactionID(transaction domain.PortalTransaction, now time.Time) string {
 	return transaction.MerchantID + "-" + transaction.Reference + "-" + now.Format("20060102150405")
@@ -421,32 +446,35 @@ func (w Worker) Run(ctx context.Context) error {
 	invoiceTicker := time.NewTicker(PollInterval)
 	testPaymentTicker := time.NewTicker(TestPaymentQueuePollInterval)
 	merchantTicker := time.NewTicker(MerchantQueuePollInterval)
+	jobTicker := time.NewTicker(BrowserJobPollInterval)
 	defer invoiceTicker.Stop()
 	defer testPaymentTicker.Stop()
 	defer merchantTicker.Stop()
-	type browserResult struct {
-		err error
+	defer jobTicker.Stop()
+	type jobResult struct {
+		processed bool
+		err       error
 	}
-	browserDone := make(chan browserResult, 1)
+	jobDone := make(chan jobResult, 1)
 	browserBusy := false
-	validationPending := false
-	startBrowserOperation := func(validation bool) {
+	startBrowserJob := func() {
 		if browserBusy {
-			if validation {
-				validationPending = true
-			}
 			return
 		}
 		browserBusy = true
 		go func() {
-			if validation {
-				browserDone <- browserResult{err: w.validateTestPayments(ctx)}
-				return
-			}
-			browserDone <- browserResult{err: w.syncMerchants(ctx, w.now())}
+			processed, err := w.processNextBrowserJob(ctx)
+			jobDone <- jobResult{processed: processed, err: err}
 		}()
 	}
-	startBrowserOperation(false)
+	now := w.now()
+	if _, _, err := w.enqueueBrowserJob(ctx, "payment_validation", "", 100, now); err != nil {
+		return err
+	}
+	if _, _, err := w.enqueueBrowserJob(ctx, "merchant_sync", "", 10, now); err != nil {
+		return err
+	}
+	startBrowserJob()
 	for {
 		select {
 		case <-ctx.Done():
@@ -456,17 +484,24 @@ func (w Worker) Run(ctx context.Context) error {
 				return err
 			}
 		case <-testPaymentTicker.C:
-			startBrowserOperation(true)
+			if _, _, err := w.enqueueBrowserJob(ctx, "payment_validation", "", 100, w.now()); err != nil {
+				return err
+			}
+			startBrowserJob()
 		case <-merchantTicker.C:
-			startBrowserOperation(false)
-		case result := <-browserDone:
+			if _, _, err := w.enqueueBrowserJob(ctx, "merchant_sync", "", 10, w.now()); err != nil {
+				return err
+			}
+			startBrowserJob()
+		case <-jobTicker.C:
+			startBrowserJob()
+		case result := <-jobDone:
 			browserBusy = false
 			if result.err != nil {
 				return result.err
 			}
-			if validationPending {
-				validationPending = false
-				startBrowserOperation(true)
+			if result.processed {
+				startBrowserJob()
 			}
 		}
 	}
@@ -476,4 +511,100 @@ func (w Worker) now() time.Time {
 		return w.Now().UTC()
 	}
 	return time.Now().UTC()
+}
+
+func (w Worker) logger() *slog.Logger {
+	if w.Logger != nil {
+		return w.Logger
+	}
+	return slog.Default()
+}
+
+func (w Worker) processNextBrowserJob(ctx context.Context) (bool, error) {
+	owner := w.JobOwner
+	if owner == "" {
+		owner = "xloyal-worker"
+	}
+	job, claimed, err := w.Repo.ClaimBrowserJob(ctx, owner, w.now(), BrowserJobLease)
+	if err != nil || !claimed {
+		return claimed, err
+	}
+	w.logger().Info("browser job started", "job_id", job.ID, "kind", job.Kind, "merchant_id", job.MerchantID, "attempt", job.Attempt, "request_count", job.RequestCount)
+	started := time.Now()
+	err = w.executeBrowserJob(ctx, job)
+	completedAt := w.now()
+	if err != nil {
+		message := truncateError(err.Error())
+		if failErr := w.Repo.FailBrowserJob(ctx, job.ID, owner, completedAt, message); failErr != nil {
+			return true, fmt.Errorf("browser job failed: %v; persist failure: %w", err, failErr)
+		}
+		w.logger().Error("browser job failed", "job_id", job.ID, "kind", job.Kind, "merchant_id", job.MerchantID, "duration_ms", time.Since(started).Milliseconds(), "error", err)
+		return true, nil
+	}
+	if err := w.Repo.CompleteBrowserJob(ctx, job.ID, owner, completedAt); err != nil {
+		return true, err
+	}
+	w.logger().Info("browser job completed", "job_id", job.ID, "kind", job.Kind, "merchant_id", job.MerchantID, "duration_ms", time.Since(started).Milliseconds())
+	return true, nil
+}
+
+func (w Worker) executeBrowserJob(ctx context.Context, job domain.BrowserJob) error {
+	switch job.Kind {
+	case "manual_login":
+		if w.ManualLogin == nil {
+			return fmt.Errorf("manual browser login is not configured")
+		}
+		connection, err := w.Repo.MerchantConnection(ctx, job.MerchantID)
+		if err != nil {
+			return err
+		}
+		connection.Status = domain.ConnectionReconnectRequired
+		connection.LastError = "Manual browser login in progress"
+		connection.UpdatedAt = w.now()
+		if err := w.Repo.UpsertMerchantConnection(ctx, connection); err != nil {
+			return err
+		}
+		if err := w.ManualLogin(ctx, connection); err != nil {
+			connection.LastError = "Manual browser login failed: " + truncateError(err.Error())
+			connection.UpdatedAt = w.now()
+			_ = w.Repo.UpsertMerchantConnection(ctx, connection)
+			return err
+		}
+		connection.LastSyncedAt = nil
+		connection.LastError = "Browser connection queued"
+		connection.UpdatedAt = w.now()
+		if err := w.Repo.UpsertMerchantConnection(ctx, connection); err != nil {
+			return err
+		}
+		_, _, err = w.enqueueBrowserJob(ctx, "merchant_sync", connection.MerchantID, 90, w.now())
+		return err
+	case "merchant_sync":
+		if job.MerchantID == "" {
+			return w.syncMerchants(ctx, w.now())
+		}
+		connection, err := w.Repo.MerchantConnection(ctx, job.MerchantID)
+		if err != nil {
+			return err
+		}
+		if connection.Status != domain.ConnectionConnected && connection.Status != domain.ConnectionReconnectRequired {
+			return fmt.Errorf("merchant connection is not available")
+		}
+		return w.syncConnections(ctx, w.now(), []domain.MerchantConnection{connection})
+	case "payment_validation":
+		return w.validateTestPayments(ctx)
+	default:
+		return fmt.Errorf("unsupported browser job kind %q", job.Kind)
+	}
+}
+
+func (w Worker) enqueueBrowserJob(ctx context.Context, kind, merchantID string, priority int, now time.Time) (domain.BrowserJob, bool, error) {
+	return w.Repo.EnqueueBrowserJob(ctx, domain.BrowserJob{ID: newBrowserJobID(), ResourceKey: "neko-shared", MerchantID: merchantID, Kind: kind, Priority: priority, State: "queued", NotBefore: now, RequestedAt: now, RequestCount: 1})
+}
+
+func newBrowserJobID() string {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(value[:])
 }

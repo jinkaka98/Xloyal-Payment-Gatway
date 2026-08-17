@@ -215,20 +215,22 @@ func TestReconnectRequiredCanQueueAutomaticConnection(t *testing.T) {
 		t.Fatalf("queue code=%d body=%s", w.Code, w.Body.String())
 	}
 	connection, _ := repo.MerchantConnection(context.Background(), "merchant_1")
-	if connection.Status != domain.ConnectionReconnectRequired || connection.LastError != "Browser connection queued" || !connection.UpdatedAt.Equal(time.Unix(0, 0).UTC()) {
+	if connection.Status != domain.ConnectionReconnectRequired || connection.LastError != "Browser connection queued" || connection.UpdatedAt.Before(now) {
 		t.Fatalf("connection=%+v", connection)
+	}
+	job, claimed, err := repo.ClaimBrowserJob(context.Background(), "worker", time.Now().UTC(), time.Minute)
+	if err != nil || !claimed || job.Kind != "merchant_sync" || job.MerchantID != "merchant_1" {
+		t.Fatalf("job=%+v claimed=%v err=%v", job, claimed, err)
 	}
 }
 
-func TestManualLoginAcceptsAndQueuesSyncAfterBackgroundCompletion(t *testing.T) {
+func TestManualLoginQueuesWorkerJobWithoutRunningBrowserInAPI(t *testing.T) {
 	repo := store.NewMemory()
 	ctx := context.Background()
 	repo.UpsertMerchantConnection(ctx, domain.MerchantConnection{MerchantID: "merchant_manual", Status: domain.ConnectionReconnectRequired, LastSyncedAt: func() *time.Time { value := time.Now().UTC(); return &value }(), UpdatedAt: time.Now().UTC()})
-	started := make(chan struct{})
-	release := make(chan struct{})
+	called := false
 	manualLogin := func(context.Context, domain.MerchantConnection) error {
-		close(started)
-		<-release
+		called = true
 		return nil
 	}
 	h := Server{Repo: repo, ManualLogin: manualLogin, AdminTokens: map[string]string{"admin": "operator"}}.Handler()
@@ -239,28 +241,17 @@ func TestManualLoginAcceptsAndQueuesSyncAfterBackgroundCompletion(t *testing.T) 
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("manual login code=%d body=%s", response.Code, response.Body.String())
 	}
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("manual login did not start in background")
+	if called {
+		t.Fatal("API executed browser login instead of queueing it")
 	}
 	connection, _ := repo.MerchantConnection(ctx, "merchant_manual")
-	if connection.LastError != "Manual browser login in progress" {
-		t.Fatalf("in-progress connection=%+v", connection)
+	if connection.LastError != "Manual browser login queued" {
+		t.Fatalf("queued connection=%+v", connection)
 	}
-	close(release)
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		connection, _ = repo.MerchantConnection(ctx, "merchant_manual")
-		if connection.LastError == "Browser connection queued" {
-			if !connection.UpdatedAt.Equal(time.Unix(0, 0).UTC()) || connection.LastSyncedAt != nil {
-				t.Fatalf("queued connection=%+v", connection)
-			}
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	job, claimed, err := repo.ClaimBrowserJob(ctx, "worker", time.Now().UTC(), time.Minute)
+	if err != nil || !claimed || job.Kind != "manual_login" || job.MerchantID != "merchant_manual" {
+		t.Fatalf("queued browser job=%+v claimed=%v err=%v", job, claimed, err)
 	}
-	t.Fatalf("background completion did not queue sync: %+v", connection)
 }
 
 func TestUpdateMerchantBrowserCredentialEncryptsAndQueuesReconnect(t *testing.T) {
@@ -468,8 +459,12 @@ func TestTenantRefreshAndTransactionHistoryAreIsolated(t *testing.T) {
 		t.Fatalf("refresh code=%d body=%s", refresh.Code, refresh.Body.String())
 	}
 	connection, _ := repo.MerchantConnection(ctx, "merchant_a")
-	if connection.LastError != "Tenant requested transaction refresh" || !connection.UpdatedAt.Equal(time.Unix(0, 0).UTC()) {
+	if connection.LastError != "Tenant requested transaction refresh" || connection.UpdatedAt.IsZero() {
 		t.Fatalf("connection=%+v", connection)
+	}
+	job, claimed, err := repo.ClaimBrowserJob(ctx, "worker", time.Now().UTC(), time.Minute)
+	if err != nil || !claimed || job.Kind != "merchant_sync" || job.MerchantID != "merchant_a" {
+		t.Fatalf("job=%+v claimed=%v err=%v", job, claimed, err)
 	}
 
 	history := httptest.NewRecorder()
@@ -819,7 +814,7 @@ func TestTenantQRISTransactionRoutesPersistAndAreIdempotent(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/tenant-a/transactions/qris/"+first.ID, nil)
 	req.Header.Set("X-API-Key", "key-a")
 	h.ServeHTTP(detail, req)
-	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"status":"pending"`) {
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"status":"pending"`) || !strings.Contains(detail.Body.String(), `"poll_after_seconds":`) || detail.Header().Get("Retry-After") == "" {
 		t.Fatalf("detail code=%d body=%s", detail.Code, detail.Body.String())
 	}
 
@@ -846,6 +841,9 @@ func TestTenantQRISTransactionRoutesPersistAndAreIdempotent(t *testing.T) {
 	if crossTenant.Code != http.StatusNotFound {
 		t.Fatalf("cross tenant code=%d body=%s", crossTenant.Code, crossTenant.Body.String())
 	}
+	if job, claimed, err := repo.ClaimBrowserJob(ctx, "status-probe", time.Now().UTC(), time.Minute); err != nil || claimed {
+		t.Fatalf("status GET created browser job claimed=%v job=%+v err=%v", claimed, job, err)
+	}
 }
 
 func TestTenantQRISUniqueAmountAllocatesDistinctPayableAmounts(t *testing.T) {
@@ -853,9 +851,11 @@ func TestTenantQRISUniqueAmountAllocatesDistinctPayableAmounts(t *testing.T) {
 	repo := store.NewMemory()
 	ctx := context.Background()
 	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
-	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", MerchantID: "merchant-a", UseUniqueAmountCode: true, APIKeyHash: security.HashSecret("key-a"), Active: true})
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", MerchantID: "merchant-a", UseUniqueAmountCode: true, UniqueAmountCooldownMinutes: 45, APIKeyHash: security.HashSecret("key-a"), Active: true})
 	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-all", AccessScope: "all_tenants", StaticPayload: staticPayload, StaticToDynamic: true, MaxRequestsPM: 10, Active: true})
-	h := Server{Repo: repo}.Handler()
+	h := Server{Repo: repo, UniqueAmountCodeOrder: func() ([]int64, error) {
+		return []int64{37, 12, 88}, nil
+	}}.Handler()
 
 	for i, key := range []string{"order-a", "order-b"} {
 		w := httptest.NewRecorder()
@@ -873,12 +873,49 @@ func TestTenantQRISUniqueAmountAllocatesDistinctPayableAmounts(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 			t.Fatal(err)
 		}
-		wantPayable := int64(10001 + i)
-		if payment.Amount != 10000 || payment.PayableAmount != wantPayable || payment.UniqueAmountCode != int64(i+1) {
+		wantCodes := []int64{37, 12}
+		wantPayable := int64(10000) + wantCodes[i]
+		if payment.Amount != 10000 || payment.PayableAmount != wantPayable || payment.UniqueAmountCode != wantCodes[i] {
 			t.Fatalf("request %d payment=%+v", i, payment)
 		}
-		if response["requested_amount"] != float64(10000) || response["payable_amount"] != float64(wantPayable) || response["unique_amount_code"] != float64(i+1) {
+		if response["requested_amount"] != float64(10000) || response["payable_amount"] != float64(wantPayable) || response["unique_amount_code"] != float64(wantCodes[i]) {
 			t.Fatalf("request %d response=%s", i, w.Body.String())
+		}
+	}
+}
+
+func TestSecureUniqueAmountCodeOrderIsPermutation(t *testing.T) {
+	codes, err := secureUniqueAmountCodeOrder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(codes) != 99 {
+		t.Fatalf("code count=%d", len(codes))
+	}
+	seen := make(map[int64]bool, len(codes))
+	for _, code := range codes {
+		if code < 1 || code > 99 || seen[code] {
+			t.Fatalf("invalid permutation code=%d seen=%v", code, seen[code])
+		}
+		seen[code] = true
+	}
+}
+
+func TestTenantCooldownMinutesMustBeBetweenThirtyAndSixty(t *testing.T) {
+	repo := store.NewMemory()
+	ctx := context.Background()
+	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", MerchantID: "merchant-a", Name: "Tenant", UniqueAmountCooldownMinutes: 30, Active: true})
+	h := Server{Repo: repo, AdminTokens: map[string]string{"admin": "super_admin"}}.Handler()
+
+	for _, minutes := range []int{29, 61} {
+		w := httptest.NewRecorder()
+		body := fmt.Sprintf(`{"name":"Tenant","merchant_id":"merchant-a","use_unique_amount_code":true,"unique_amount_cooldown_minutes":%d,"active":true}`, minutes)
+		req := httptest.NewRequest(http.MethodPut, "/admin/tenants/tenant-a", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer admin")
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("minutes=%d code=%d body=%s", minutes, w.Code, w.Body.String())
 		}
 	}
 }
@@ -914,7 +951,7 @@ func TestAdminQRISTestCannotReuseTenantReservedPayableAmount(t *testing.T) {
 	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
 	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", MerchantID: "merchant-a", UseUniqueAmountCode: true, APIKeyHash: security.HashSecret("key-a"), Active: true})
 	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-all", AccessScope: "all_tenants", StaticPayload: staticPayload, StaticToDynamic: true, MaxRequestsPM: 10, Active: true})
-	h := Server{Repo: repo, AdminTokens: map[string]string{"admin": "operator"}}.Handler()
+	h := Server{Repo: repo, AdminTokens: map[string]string{"admin": "operator"}, UniqueAmountCodeOrder: func() ([]int64, error) { return []int64{1}, nil }}.Handler()
 
 	tenantRequest := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-a/transactions/qris", strings.NewReader(`{"template_id":"template-all","amount":10000,"idempotency_key":"order-a"}`))

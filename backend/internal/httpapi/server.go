@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -30,13 +31,14 @@ import (
 )
 
 type Server struct {
-	Repo              store.Repository
-	Gateway           gateway.Service
-	Cipher            *security.Cipher
-	AdminTokens       map[string]string
-	ManualLogin       func(context.Context, domain.MerchantConnection) error
-	WebhookSecret     string
-	WebhookSignalPath string
+	Repo                  store.Repository
+	Gateway               gateway.Service
+	Cipher                *security.Cipher
+	AdminTokens           map[string]string
+	ManualLogin           func(context.Context, domain.MerchantConnection) error
+	WebhookSecret         string
+	WebhookSignalPath     string
+	UniqueAmountCodeOrder func() ([]int64, error)
 }
 
 func (s Server) Handler() http.Handler {
@@ -418,46 +420,24 @@ func (s Server) startManualMerchantLogin(w http.ResponseWriter, r *http.Request,
 		notFound(w, err)
 		return
 	}
-	if connection.LastError == "Manual browser login in progress" {
-		write(w, http.StatusAccepted, map[string]string{"status": "manual_login_in_progress"})
+	if connection.LastError == "Manual browser login queued" || connection.LastError == "Manual browser login in progress" {
+		write(w, http.StatusAccepted, map[string]string{"status": "manual_login_queued"})
 		return
 	}
 	connection.Status = domain.ConnectionReconnectRequired
-	connection.LastError = "Manual browser login in progress"
+	connection.LastError = "Manual browser login queued"
 	connection.LastSyncedAt = nil
 	connection.UpdatedAt = time.Now().UTC()
 	if err = s.Repo.UpsertMerchantConnection(r.Context(), connection); err != nil {
 		problem(w, http.StatusInternalServerError, "mark manual browser login failed")
 		return
 	}
-	go s.finishManualLogin(connection)
-	write(w, http.StatusAccepted, map[string]string{"status": "manual_login_started"})
-}
-
-func (s Server) finishManualLogin(connection domain.MerchantConnection) {
-	ctx, cancel := context.WithTimeout(context.Background(), 11*time.Minute)
-	defer cancel()
-	merchantID := connection.MerchantID
-	if err := s.ManualLogin(ctx, connection); err != nil {
-		failed, lookupErr := s.Repo.MerchantConnection(ctx, merchantID)
-		if lookupErr != nil {
-			return
-		}
-		failed.Status = domain.ConnectionReconnectRequired
-		failed.LastError = "Manual browser login failed: " + truncateManualLoginError(err.Error())
-		failed.UpdatedAt = time.Now().UTC()
-		_ = s.Repo.UpsertMerchantConnection(ctx, failed)
-		return
-	}
-	queued, err := s.Repo.MerchantConnection(ctx, merchantID)
+	job, _, err := s.enqueueBrowserJob(r.Context(), "manual_login", connection.MerchantID, 100)
 	if err != nil {
+		problem(w, http.StatusInternalServerError, "queue manual browser login failed")
 		return
 	}
-	queued.Status = domain.ConnectionReconnectRequired
-	queued.LastSyncedAt = nil
-	queued.LastError = "Browser connection queued"
-	queued.UpdatedAt = time.Unix(0, 0).UTC()
-	_ = s.Repo.UpsertMerchantConnection(ctx, queued)
+	write(w, http.StatusAccepted, map[string]string{"status": "manual_login_queued", "job_id": job.ID})
 }
 
 func (s Server) requestMerchantSync(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
@@ -471,13 +451,17 @@ func (s Server) requestMerchantSync(w http.ResponseWriter, r *http.Request, _ do
 	}
 	v.LastSyncedAt = nil
 	v.LastError = "Browser connection queued"
-	// Epoch makes the existing scheduler pick this connection immediately.
-	v.UpdatedAt = time.Unix(0, 0).UTC()
+	v.UpdatedAt = time.Now().UTC()
 	if err = s.Repo.UpsertMerchantConnection(r.Context(), v); err != nil {
 		problem(w, 500, "queue sync failed")
 		return
 	}
-	write(w, 202, map[string]string{"status": "queued"})
+	job, _, err := s.enqueueBrowserJob(r.Context(), "merchant_sync", v.MerchantID, 80)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "queue sync failed")
+		return
+	}
+	write(w, 202, map[string]string{"status": "queued", "job_id": job.ID})
 }
 func (s Server) refreshTenantTransactions(w http.ResponseWriter, r *http.Request, tenant domain.Tenant) {
 	if tenant.MerchantID == "" {
@@ -494,14 +478,19 @@ func (s Server) refreshTenantTransactions(w http.ResponseWriter, r *http.Request
 	}
 	connection.LastSyncedAt = nil
 	connection.LastError = "Tenant requested transaction refresh"
-	connection.UpdatedAt = time.Unix(0, 0).UTC()
+	connection.UpdatedAt = time.Now().UTC()
 	if err = s.Repo.UpsertMerchantConnection(r.Context(), connection); err != nil {
+		problem(w, http.StatusInternalServerError, "queue refresh failed")
+		return
+	}
+	job, _, err := s.enqueueBrowserJob(r.Context(), "merchant_sync", tenant.MerchantID, 80)
+	if err != nil {
 		problem(w, http.StatusInternalServerError, "queue refresh failed")
 		return
 	}
 	write(w, http.StatusAccepted, map[string]any{
 		"status": "queued", "tenant_id": tenant.ID, "merchant_id": tenant.MerchantID,
-		"poll_url": "/v1/tenants/" + tenant.ID + "/transactions",
+		"poll_url": "/v1/tenants/" + tenant.ID + "/transactions", "job_id": job.ID,
 	})
 }
 func (s Server) listTenantTransactions(w http.ResponseWriter, r *http.Request, tenant domain.Tenant) {
@@ -543,13 +532,34 @@ func (s Server) listTenantTransactions(w http.ResponseWriter, r *http.Request, t
 
 type tenantQRISResponse struct {
 	domain.TestPayment
-	TemplateID      string `json:"template_id"`
-	Currency        string `json:"currency"`
-	RequestedAmount int64  `json:"requested_amount"`
-	QRPayload       string `json:"qr_payload,omitempty"`
-	QRPNGBase64     string `json:"qr_png_base64,omitempty"`
-	StatusURL       string `json:"status_url"`
-	QRURL           string `json:"qr_url"`
+	TemplateID       string `json:"template_id"`
+	Currency         string `json:"currency"`
+	RequestedAmount  int64  `json:"requested_amount"`
+	QRPayload        string `json:"qr_payload,omitempty"`
+	QRPNGBase64      string `json:"qr_png_base64,omitempty"`
+	StatusURL        string `json:"status_url"`
+	QRURL            string `json:"qr_url"`
+	PollAfterSeconds int    `json:"poll_after_seconds,omitempty"`
+}
+
+func pollAfterSeconds(payment domain.TestPayment, now time.Time) int {
+	if payment.Status != domain.InvoicePending || payment.NextCheckAt == nil {
+		return 0
+	}
+	seconds := int(payment.NextCheckAt.Sub(now).Round(time.Second).Seconds())
+	if payment.NextCheckAt.After(now) && seconds < 1 {
+		seconds = 1
+	}
+	if seconds < 1 {
+		seconds = 1
+	}
+	return seconds
+}
+
+func setPollHeaders(w http.ResponseWriter, payment domain.TestPayment, now time.Time) {
+	if delay := pollAfterSeconds(payment, now); delay > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(delay))
+	}
 }
 
 func tenantPaymentLog(payment domain.TestPayment) map[string]any {
@@ -676,9 +686,14 @@ func (s Server) createTenantQRIS(w http.ResponseWriter, r *http.Request, tenant 
 	uniqueCode := newUniqueCode()
 	codes := []int64{0}
 	if tenant.UseUniqueAmountCode {
-		codes = make([]int64, 99)
-		for i := range codes {
-			codes[i] = int64(i + 1)
+		order := s.UniqueAmountCodeOrder
+		if order == nil {
+			order = secureUniqueAmountCodeOrder
+		}
+		codes, err = order()
+		if err != nil {
+			problem(w, http.StatusInternalServerError, "generate unique amount code failed")
+			return
 		}
 	}
 	var stored domain.TestPayment
@@ -745,7 +760,8 @@ func (s Server) createTenantQRIS(w http.ResponseWriter, r *http.Request, tenant 
 	if created {
 		status = http.StatusCreated
 	}
-	write(w, status, tenantQRISResponse{TestPayment: stored, TemplateID: stored.QRISTemplateID, Currency: "IDR", RequestedAmount: stored.Amount, QRPayload: stored.DynamicPayload, QRPNGBase64: base64.StdEncoding.EncodeToString(png), StatusURL: "/v1/tenants/" + tenant.ID + "/transactions/qris/" + stored.ID, QRURL: "/v1/tenants/" + tenant.ID + "/transactions/qris/" + stored.ID + "/qr"})
+	setPollHeaders(w, stored, now)
+	write(w, status, tenantQRISResponse{TestPayment: stored, TemplateID: stored.QRISTemplateID, Currency: "IDR", RequestedAmount: stored.Amount, QRPayload: stored.DynamicPayload, QRPNGBase64: base64.StdEncoding.EncodeToString(png), StatusURL: "/v1/tenants/" + tenant.ID + "/transactions/qris/" + stored.ID, QRURL: "/v1/tenants/" + tenant.ID + "/transactions/qris/" + stored.ID + "/qr", PollAfterSeconds: pollAfterSeconds(stored, now)})
 }
 
 func (s Server) getTenantQRISTransaction(w http.ResponseWriter, r *http.Request, tenant domain.Tenant) {
@@ -755,7 +771,8 @@ func (s Server) getTenantQRISTransaction(w http.ResponseWriter, r *http.Request,
 		notFound(w, err)
 		return
 	}
-	response := tenantQRISResponse{TestPayment: payment, TemplateID: payment.QRISTemplateID, Currency: "IDR", RequestedAmount: payment.Amount, StatusURL: r.URL.Path, QRURL: r.URL.Path + "/qr"}
+	now := time.Now().UTC()
+	response := tenantQRISResponse{TestPayment: payment, TemplateID: payment.QRISTemplateID, Currency: "IDR", RequestedAmount: payment.Amount, StatusURL: r.URL.Path, QRURL: r.URL.Path + "/qr", PollAfterSeconds: pollAfterSeconds(payment, now)}
 	if payment.Status == domain.InvoicePending {
 		png, pngErr := qrisservice.PNG(payment.DynamicPayload)
 		if pngErr != nil {
@@ -767,6 +784,7 @@ func (s Server) getTenantQRISTransaction(w http.ResponseWriter, r *http.Request,
 	} else {
 		response.DynamicPayload = ""
 	}
+	setPollHeaders(w, payment, now)
 	write(w, http.StatusOK, response)
 }
 
@@ -1116,13 +1134,14 @@ func (s Server) listTenants(w http.ResponseWriter, r *http.Request, _ domain.Ten
 }
 func (s Server) createTenant(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
 	var in struct {
-		Name                string `json:"name"`
-		MerchantID          string `json:"merchant_id"`
-		SiteURL             string `json:"site_url"`
-		CallbackURL         string `json:"callback_url"`
-		WebhookURL          string `json:"webhook_url"`
-		SandboxMode         bool   `json:"sandbox_mode"`
-		UseUniqueAmountCode bool   `json:"use_unique_amount_code"`
+		Name                        string `json:"name"`
+		MerchantID                  string `json:"merchant_id"`
+		SiteURL                     string `json:"site_url"`
+		CallbackURL                 string `json:"callback_url"`
+		WebhookURL                  string `json:"webhook_url"`
+		SandboxMode                 bool   `json:"sandbox_mode"`
+		UseUniqueAmountCode         bool   `json:"use_unique_amount_code"`
+		UniqueAmountCooldownMinutes int    `json:"unique_amount_cooldown_minutes"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -1130,6 +1149,13 @@ func (s Server) createTenant(w http.ResponseWriter, r *http.Request, _ domain.Te
 	in.Name = strings.TrimSpace(in.Name)
 	if in.Name == "" || in.MerchantID == "" {
 		problem(w, http.StatusBadRequest, "name and Merchant ID are required")
+		return
+	}
+	if in.UniqueAmountCooldownMinutes == 0 {
+		in.UniqueAmountCooldownMinutes = 30
+	}
+	if !validUniqueAmountCooldown(in.UniqueAmountCooldownMinutes) {
+		problem(w, http.StatusBadRequest, "unique_amount_cooldown_minutes must be between 30 and 60")
 		return
 	}
 	merchant, err := s.Repo.MerchantID(r.Context(), in.MerchantID)
@@ -1153,7 +1179,7 @@ func (s Server) createTenant(w http.ResponseWriter, r *http.Request, _ domain.Te
 		problem(w, http.StatusInternalServerError, "tenant credential encryption failed")
 		return
 	}
-	v := domain.Tenant{ID: "tenant_" + newID()[:16], MerchantID: merchant.ID, Name: in.Name, SiteURL: strings.TrimSpace(in.SiteURL), CallbackURL: strings.TrimSpace(in.CallbackURL), WebhookURL: strings.TrimSpace(in.WebhookURL), SandboxMode: in.SandboxMode, UseUniqueAmountCode: in.UseUniqueAmountCode, APIKeyHash: security.HashSecret(apiKey), APIKeyCiphertext: ciphertext, APIKeyRecoverable: true, Active: true, CreatedAt: time.Now().UTC()}
+	v := domain.Tenant{ID: "tenant_" + newID()[:16], MerchantID: merchant.ID, Name: in.Name, SiteURL: strings.TrimSpace(in.SiteURL), CallbackURL: strings.TrimSpace(in.CallbackURL), WebhookURL: strings.TrimSpace(in.WebhookURL), SandboxMode: in.SandboxMode, UseUniqueAmountCode: in.UseUniqueAmountCode, UniqueAmountCooldownMinutes: in.UniqueAmountCooldownMinutes, APIKeyHash: security.HashSecret(apiKey), APIKeyCiphertext: ciphertext, APIKeyRecoverable: true, Active: true, CreatedAt: time.Now().UTC()}
 	if err := s.Repo.CreateTenant(r.Context(), v); err != nil {
 		problem(w, 500, "create tenant failed")
 		return
@@ -1169,14 +1195,15 @@ func (s Server) updateTenant(w http.ResponseWriter, r *http.Request, _ domain.Te
 		return
 	}
 	var in struct {
-		Name                string `json:"name"`
-		MerchantID          string `json:"merchant_id"`
-		SiteURL             string `json:"site_url"`
-		CallbackURL         string `json:"callback_url"`
-		WebhookURL          string `json:"webhook_url"`
-		SandboxMode         bool   `json:"sandbox_mode"`
-		UseUniqueAmountCode *bool  `json:"use_unique_amount_code"`
-		Active              bool   `json:"active"`
+		Name                        string `json:"name"`
+		MerchantID                  string `json:"merchant_id"`
+		SiteURL                     string `json:"site_url"`
+		CallbackURL                 string `json:"callback_url"`
+		WebhookURL                  string `json:"webhook_url"`
+		SandboxMode                 bool   `json:"sandbox_mode"`
+		UseUniqueAmountCode         *bool  `json:"use_unique_amount_code"`
+		UniqueAmountCooldownMinutes *int   `json:"unique_amount_cooldown_minutes"`
+		Active                      bool   `json:"active"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -1184,6 +1211,10 @@ func (s Server) updateTenant(w http.ResponseWriter, r *http.Request, _ domain.Te
 	in.Name = strings.TrimSpace(in.Name)
 	if in.Name == "" || in.MerchantID == "" {
 		problem(w, http.StatusBadRequest, "name and Merchant ID are required")
+		return
+	}
+	if in.UniqueAmountCooldownMinutes != nil && !validUniqueAmountCooldown(*in.UniqueAmountCooldownMinutes) {
+		problem(w, http.StatusBadRequest, "unique_amount_cooldown_minutes must be between 30 and 60")
 		return
 	}
 	merchant, err := s.Repo.MerchantID(r.Context(), in.MerchantID)
@@ -1200,6 +1231,9 @@ func (s Server) updateTenant(w http.ResponseWriter, r *http.Request, _ domain.Te
 	current.Name, current.MerchantID, current.SiteURL, current.CallbackURL, current.WebhookURL, current.SandboxMode, current.Active = in.Name, merchant.ID, strings.TrimSpace(in.SiteURL), strings.TrimSpace(in.CallbackURL), strings.TrimSpace(in.WebhookURL), in.SandboxMode, in.Active
 	if in.UseUniqueAmountCode != nil {
 		current.UseUniqueAmountCode = *in.UseUniqueAmountCode
+	}
+	if in.UniqueAmountCooldownMinutes != nil {
+		current.UniqueAmountCooldownMinutes = *in.UniqueAmountCooldownMinutes
 	}
 	if err = s.Repo.UpdateTenant(r.Context(), current); err != nil {
 		problem(w, http.StatusInternalServerError, "update tenant failed")
@@ -1866,20 +1900,33 @@ func problem(w http.ResponseWriter, status int, msg string) {
 	write(w, status, map[string]string{"error": msg})
 }
 
-func truncateManualLoginError(message string) string {
-	message = strings.TrimSpace(message)
-	if len(message) <= 240 {
-		return message
-	}
-	return message[:240]
-}
-
 func newID() string {
 	var bytes [16]byte
 	if _, err := rand.Read(bytes[:]); err != nil {
 		panic(err)
 	}
 	return hex.EncodeToString(bytes[:])
+}
+
+func (s Server) enqueueBrowserJob(ctx context.Context, kind, merchantID string, priority int) (domain.BrowserJob, bool, error) {
+	now := time.Now().UTC()
+	return s.Repo.EnqueueBrowserJob(ctx, domain.BrowserJob{ID: newID(), ResourceKey: "neko-shared", MerchantID: merchantID, Kind: kind, Priority: priority, State: "queued", NotBefore: now, RequestedAt: now, RequestCount: 1})
+}
+
+func secureUniqueAmountCodeOrder() ([]int64, error) {
+	codes := make([]int64, 99)
+	for i := range codes {
+		codes[i] = int64(i + 1)
+	}
+	for i := len(codes) - 1; i > 0; i-- {
+		index, err := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
+		if err != nil {
+			return nil, err
+		}
+		j := int(index.Int64())
+		codes[i], codes[j] = codes[j], codes[i]
+	}
+	return codes, nil
 }
 
 func newUniqueCode() string {
@@ -1909,6 +1956,10 @@ func validIntegrationURL(raw string) bool {
 	}
 	parsed, err := url.ParseRequestURI(raw)
 	return err == nil && parsed.Host != "" && (parsed.Scheme == "https" || parsed.Scheme == "http")
+}
+
+func validUniqueAmountCooldown(minutes int) bool {
+	return minutes >= 30 && minutes <= 60
 }
 
 func securityHeaders(next http.Handler) http.Handler {

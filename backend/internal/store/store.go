@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -31,6 +32,10 @@ type Repository interface {
 	UpsertMerchantConnection(context.Context, domain.MerchantConnection) error
 	MerchantConnection(context.Context, string) (domain.MerchantConnection, error)
 	ListDueMerchantConnections(context.Context, time.Time, int) ([]domain.MerchantConnection, error)
+	EnqueueBrowserJob(context.Context, domain.BrowserJob) (domain.BrowserJob, bool, error)
+	ClaimBrowserJob(context.Context, string, time.Time, time.Duration) (domain.BrowserJob, bool, error)
+	CompleteBrowserJob(context.Context, string, string, time.Time) error
+	FailBrowserJob(context.Context, string, string, time.Time, string) error
 	CreatePortalTransaction(context.Context, domain.PortalTransaction) error
 	ListPortalTransactions(context.Context, string, string, int) ([]domain.PortalTransaction, error)
 	UpsertTariff(context.Context, domain.Tariff) error
@@ -57,6 +62,7 @@ type Repository interface {
 	UpdatePendingTestPayment(context.Context, domain.TestPayment) (bool, error)
 	MatchPendingTestPayment(context.Context, domain.TestPayment, domain.PortalTransaction) (bool, error)
 	PendingTestPayments(context.Context, time.Time, int) ([]domain.TestPayment, error)
+	PendingConnectedTestPayments(context.Context, time.Time, int) ([]domain.TestPayment, error)
 	ExpirePendingTestPayments(context.Context, time.Time) (int64, error)
 	ListTestPayments(context.Context, int) ([]domain.TestPayment, error)
 	ListTenantTestPayments(context.Context, string, int) ([]domain.TestPayment, error)
@@ -65,19 +71,21 @@ type Repository interface {
 }
 
 type Memory struct {
-	mu                 sync.Mutex
-	tenants            map[string]domain.Tenant
-	merchantIDs        map[string]domain.MerchantID
-	connections        map[string]domain.MerchantConnection
-	portalTransactions map[string]domain.PortalTransaction
-	tariffs            map[string]domain.Tariff
-	merchants          map[string]domain.MerchantAccount
-	invoices           map[string]domain.Invoice
-	idem               map[string]string
-	audits             []domain.AuditEvent
-	templates          map[string]domain.QRISTemplate
-	payments           map[string]domain.TestPayment
-	qrisRateWindows    map[string]qrisRateWindow
+	mu                       sync.Mutex
+	tenants                  map[string]domain.Tenant
+	merchantIDs              map[string]domain.MerchantID
+	connections              map[string]domain.MerchantConnection
+	portalTransactions       map[string]domain.PortalTransaction
+	tariffs                  map[string]domain.Tariff
+	merchants                map[string]domain.MerchantAccount
+	invoices                 map[string]domain.Invoice
+	idem                     map[string]string
+	audits                   []domain.AuditEvent
+	templates                map[string]domain.QRISTemplate
+	payments                 map[string]domain.TestPayment
+	qrisRateWindows          map[string]qrisRateWindow
+	uniqueAmountReservations map[string]uniqueAmountReservation
+	browserJobs              map[string]domain.BrowserJob
 }
 
 type qrisRateWindow struct {
@@ -85,12 +93,26 @@ type qrisRateWindow struct {
 	Count     int
 }
 
+type uniqueAmountReservation struct {
+	PaymentID       string
+	TenantID        string
+	MerchantID      string
+	PayableAmount   int64
+	Code            int64
+	CooldownMinutes int
+	State           string
+	ReservedAt      time.Time
+	TerminalStatus  string
+	TerminalAt      time.Time
+	CooldownUntil   time.Time
+}
+
 func NewMemory() *Memory {
 	return &Memory{
 		tenants: map[string]domain.Tenant{}, merchants: map[string]domain.MerchantAccount{},
 		merchantIDs: map[string]domain.MerchantID{}, connections: map[string]domain.MerchantConnection{}, portalTransactions: map[string]domain.PortalTransaction{}, tariffs: map[string]domain.Tariff{},
 		invoices: map[string]domain.Invoice{}, idem: map[string]string{},
-		templates: map[string]domain.QRISTemplate{}, payments: map[string]domain.TestPayment{}, qrisRateWindows: map[string]qrisRateWindow{},
+		templates: map[string]domain.QRISTemplate{}, payments: map[string]domain.TestPayment{}, qrisRateWindows: map[string]qrisRateWindow{}, uniqueAmountReservations: map[string]uniqueAmountReservation{}, browserJobs: map[string]domain.BrowserJob{},
 	}
 }
 func (m *Memory) AssignTenantMerchant(_ context.Context, tenantID, merchantID string) error {
@@ -162,6 +184,124 @@ func (m *Memory) ListDueMerchantConnections(_ context.Context, due time.Time, li
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (m *Memory) EnqueueBrowserJob(_ context.Context, job domain.BrowserJob) (domain.BrowserJob, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, existing := range m.browserJobs {
+		if existing.State != "queued" || existing.ResourceKey != job.ResourceKey || existing.MerchantID != job.MerchantID || existing.Kind != job.Kind {
+			continue
+		}
+		existing.RequestCount++
+		if job.Priority > existing.Priority {
+			existing.Priority = job.Priority
+		}
+		if job.NotBefore.Before(existing.NotBefore) {
+			existing.NotBefore = job.NotBefore
+		}
+		m.browserJobs[id] = existing
+		return existing, false, nil
+	}
+	if job.State == "" {
+		job.State = "queued"
+	}
+	if job.RequestCount == 0 {
+		job.RequestCount = 1
+	}
+	m.browserJobs[job.ID] = job
+	return job, true, nil
+}
+
+func (m *Memory) ClaimBrowserJob(_ context.Context, owner string, now time.Time, lease time.Duration) (domain.BrowserJob, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, job := range m.browserJobs {
+		if job.State == "running" && job.LeaseUntil != nil && !job.LeaseUntil.After(now) {
+			job.State = "queued"
+			job.LeaseOwner = ""
+			job.LeaseUntil = nil
+			job.LastError = "browser job lease expired; recovered"
+			job.NotBefore = now
+			m.browserJobs[id] = job
+		}
+	}
+	runningResources := map[string]bool{}
+	for _, job := range m.browserJobs {
+		if job.State == "running" {
+			runningResources[job.ResourceKey] = true
+		}
+	}
+	candidates := make([]domain.BrowserJob, 0)
+	for _, job := range m.browserJobs {
+		if job.State == "queued" && !job.NotBefore.After(now) && !runningResources[job.ResourceKey] {
+			candidates = append(candidates, job)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Priority != candidates[j].Priority {
+			return candidates[i].Priority > candidates[j].Priority
+		}
+		if !candidates[i].NotBefore.Equal(candidates[j].NotBefore) {
+			return candidates[i].NotBefore.Before(candidates[j].NotBefore)
+		}
+		if !candidates[i].RequestedAt.Equal(candidates[j].RequestedAt) {
+			return candidates[i].RequestedAt.Before(candidates[j].RequestedAt)
+		}
+		return candidates[i].ID < candidates[j].ID
+	})
+	if len(candidates) == 0 {
+		return domain.BrowserJob{}, false, nil
+	}
+	job := candidates[0]
+	leaseUntil := now.Add(lease)
+	startedAt := now
+	job.State = "running"
+	job.LeaseOwner = owner
+	job.LeaseUntil = &leaseUntil
+	job.StartedAt = &startedAt
+	job.CompletedAt = nil
+	job.Attempt++
+	m.browserJobs[job.ID] = job
+	return job, true, nil
+}
+
+func (m *Memory) CompleteBrowserJob(_ context.Context, id, owner string, completedAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job, ok := m.browserJobs[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if job.State != "running" || job.LeaseOwner != owner {
+		return ErrConflict
+	}
+	job.State = "succeeded"
+	job.CompletedAt = &completedAt
+	job.LeaseOwner = ""
+	job.LeaseUntil = nil
+	job.LastError = ""
+	m.browserJobs[id] = job
+	return nil
+}
+
+func (m *Memory) FailBrowserJob(_ context.Context, id, owner string, completedAt time.Time, message string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job, ok := m.browserJobs[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if job.State != "running" || job.LeaseOwner != owner {
+		return ErrConflict
+	}
+	job.State = "failed"
+	job.CompletedAt = &completedAt
+	job.LeaseOwner = ""
+	job.LeaseUntil = nil
+	job.LastError = message
+	m.browserJobs[id] = job
+	return nil
 }
 func (m *Memory) CreatePortalTransaction(_ context.Context, v domain.PortalTransaction) error {
 	m.mu.Lock()
@@ -235,6 +375,9 @@ func (m *Memory) Tenant(_ context.Context, id string) (domain.Tenant, error) {
 func (m *Memory) CreateTenant(_ context.Context, v domain.Tenant) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if v.UniqueAmountCooldownMinutes == 0 {
+		v.UniqueAmountCooldownMinutes = 30
+	}
 	m.tenants[v.ID] = v
 	return nil
 }
@@ -248,6 +391,9 @@ func (m *Memory) UpdateTenant(_ context.Context, v domain.Tenant) error {
 	v.APIKeyHash = current.APIKeyHash
 	v.APIKeyCiphertext = current.APIKeyCiphertext
 	v.APIKeyRecoverable = current.APIKeyCiphertext != ""
+	if v.UniqueAmountCooldownMinutes == 0 {
+		v.UniqueAmountCooldownMinutes = current.UniqueAmountCooldownMinutes
+	}
 	m.tenants[v.ID] = v
 	return nil
 }
@@ -448,10 +594,8 @@ func (m *Memory) CreateTestPayment(_ context.Context, v domain.TestPayment) erro
 		v.NextCheckAt = &next
 	}
 	if reservesPayableAmount(v) {
-		for _, existing := range m.payments {
-			if existing.Status == domain.InvoicePending && existing.MerchantID == v.MerchantID && effectivePayableAmount(existing) == effectivePayableAmount(v) && existing.ExpiresAt.After(v.CreatedAt) {
-				return ErrUniqueAmountUnavailable
-			}
+		if err := m.reserveUniqueAmountLocked(v, v.CreatedAt); err != nil {
+			return err
 		}
 	}
 	m.payments[v.ID] = v
@@ -472,10 +616,9 @@ func (m *Memory) CreateTenantTestPayment(_ context.Context, v domain.TestPayment
 		}
 		return existing, false, true, 0, nil
 	}
-	for _, existing := range m.payments {
-		if existing.Status == domain.InvoicePending && existing.MerchantID == v.MerchantID && effectivePayableAmount(existing) == effectivePayableAmount(v) && existing.ExpiresAt.After(now) {
-			return domain.TestPayment{}, false, false, 0, ErrUniqueAmountUnavailable
-		}
+	m.cleanupUniqueAmountCooldownsLocked(now)
+	if _, exists := m.uniqueAmountReservations[uniqueAmountReservationKey(v.MerchantID, effectivePayableAmount(v))]; exists {
+		return domain.TestPayment{}, false, false, 0, ErrUniqueAmountUnavailable
 	}
 	windowStart := now.UTC().Truncate(time.Minute)
 	rateKey := v.QRISTemplateID + "\x00" + v.TenantID
@@ -496,6 +639,9 @@ func (m *Memory) CreateTenantTestPayment(_ context.Context, v domain.TestPayment
 		next := v.CreatedAt.Add(15 * time.Second)
 		v.NextCheckAt = &next
 	}
+	if err := m.reserveUniqueAmountLocked(v, now); err != nil {
+		return domain.TestPayment{}, false, false, 0, err
+	}
 	m.payments[v.ID] = v
 	return v, true, true, 0, nil
 }
@@ -509,6 +655,60 @@ func effectivePayableAmount(v domain.TestPayment) int64 {
 
 func reservesPayableAmount(v domain.TestPayment) bool {
 	return v.Status == domain.InvoicePending && v.MerchantID != "" && (v.RequestSource == "tenant_api" || v.RequestSource == "admin_qris_test")
+}
+
+func uniqueAmountReservationKey(merchantID string, payableAmount int64) string {
+	return merchantID + "\x00" + fmt.Sprint(payableAmount)
+}
+
+func (m *Memory) reserveUniqueAmountLocked(v domain.TestPayment, now time.Time) error {
+	m.cleanupUniqueAmountCooldownsLocked(now)
+	key := uniqueAmountReservationKey(v.MerchantID, effectivePayableAmount(v))
+	if _, exists := m.uniqueAmountReservations[key]; exists {
+		return ErrUniqueAmountUnavailable
+	}
+	minutes := 30
+	if tenant, ok := m.tenants[v.TenantID]; ok && tenant.UniqueAmountCooldownMinutes >= 30 && tenant.UniqueAmountCooldownMinutes <= 60 {
+		minutes = tenant.UniqueAmountCooldownMinutes
+	}
+	reservation := uniqueAmountReservation{PaymentID: v.ID, TenantID: v.TenantID, MerchantID: v.MerchantID, PayableAmount: effectivePayableAmount(v), Code: v.UniqueAmountCode, CooldownMinutes: minutes, State: "active", ReservedAt: v.CreatedAt}
+	m.uniqueAmountReservations[key] = reservation
+	if reservation.Code > 0 {
+		m.appendAuditLocked(domain.AuditEvent{ID: "qris-code-reserved-" + v.ID, TenantID: v.TenantID, Actor: "system", Action: "qris.unique_amount.reserved", ResourceType: "unique_amount_code", ResourceID: v.ID, Metadata: map[string]any{"merchant_id": v.MerchantID, "code": v.UniqueAmountCode, "payable_amount": reservation.PayableAmount, "reserved_at": v.CreatedAt, "cooldown_minutes": minutes}, CreatedAt: v.CreatedAt})
+	}
+	return nil
+}
+
+func (m *Memory) startUniqueAmountCooldownLocked(v domain.TestPayment) {
+	key := uniqueAmountReservationKey(v.MerchantID, effectivePayableAmount(v))
+	reservation, exists := m.uniqueAmountReservations[key]
+	if !exists || reservation.PaymentID != v.ID {
+		return
+	}
+	if reservation.Code == 0 || (v.Status != domain.InvoicePaid && v.Status != domain.InvoiceExpired) {
+		delete(m.uniqueAmountReservations, key)
+		return
+	}
+	reservation.State = "cooldown"
+	reservation.TerminalStatus = string(v.Status)
+	reservation.TerminalAt = v.UpdatedAt
+	reservation.CooldownUntil = v.UpdatedAt.Add(time.Duration(reservation.CooldownMinutes) * time.Minute)
+	m.uniqueAmountReservations[key] = reservation
+	m.appendAuditLocked(domain.AuditEvent{ID: "qris-code-cooldown-" + v.ID, TenantID: v.TenantID, Actor: "system", Action: "qris.unique_amount.cooldown_started", ResourceType: "unique_amount_code", ResourceID: v.ID, Metadata: map[string]any{"merchant_id": v.MerchantID, "code": reservation.Code, "payable_amount": reservation.PayableAmount, "terminal_status": reservation.TerminalStatus, "terminal_at": reservation.TerminalAt, "cooldown_until": reservation.CooldownUntil}, CreatedAt: reservation.TerminalAt})
+}
+
+func (m *Memory) cleanupUniqueAmountCooldownsLocked(now time.Time) {
+	for key, reservation := range m.uniqueAmountReservations {
+		if reservation.State != "cooldown" || reservation.CooldownUntil.After(now) {
+			continue
+		}
+		m.appendAuditLocked(domain.AuditEvent{ID: "qris-code-cooldown-ended-" + reservation.PaymentID, TenantID: reservation.TenantID, Actor: "system", Action: "qris.unique_amount.cooldown_ended", ResourceType: "unique_amount_code", ResourceID: reservation.PaymentID, Metadata: map[string]any{"merchant_id": reservation.MerchantID, "code": reservation.Code, "payable_amount": reservation.PayableAmount, "cooldown_until": reservation.CooldownUntil}, CreatedAt: reservation.CooldownUntil})
+		delete(m.uniqueAmountReservations, key)
+	}
+}
+
+func (m *Memory) appendAuditLocked(v domain.AuditEvent) {
+	m.audits = append(m.audits, v)
 }
 func (m *Memory) TestPayment(_ context.Context, id string) (domain.TestPayment, error) {
 	m.mu.Lock()
@@ -546,6 +746,9 @@ func (m *Memory) UpdatePendingTestPayment(_ context.Context, v domain.TestPaymen
 		}
 	}
 	m.payments[v.ID] = v
+	if v.Status != domain.InvoicePending {
+		m.startUniqueAmountCooldownLocked(v)
+	}
 	return true, nil
 }
 func (m *Memory) MatchPendingTestPayment(_ context.Context, v domain.TestPayment, transaction domain.PortalTransaction) (bool, error) {
@@ -564,6 +767,7 @@ func (m *Memory) MatchPendingTestPayment(_ context.Context, v domain.TestPayment
 		}
 	}
 	m.payments[v.ID] = v
+	m.startUniqueAmountCooldownLocked(v)
 	for id, existing := range m.portalTransactions {
 		if existing.MerchantID == transaction.MerchantID && existing.Reference == transaction.Reference {
 			transaction.ID, transaction.CreatedAt = existing.ID, existing.CreatedAt
@@ -589,6 +793,31 @@ func (m *Memory) PendingTestPayments(_ context.Context, due time.Time, limit int
 	}
 	return out, nil
 }
+
+func (m *Memory) PendingConnectedTestPayments(_ context.Context, due time.Time, limit int) ([]domain.TestPayment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]domain.TestPayment, 0)
+	for _, v := range m.payments {
+		connection, connected := m.connections[v.MerchantID]
+		if !connected || connection.Status != domain.ConnectionConnected {
+			continue
+		}
+		if v.Status == domain.InvoicePending && v.NextCheckAt != nil && !v.NextCheckAt.After(due) {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].NextCheckAt.Equal(*out[j].NextCheckAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].NextCheckAt.Before(*out[j].NextCheckAt)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
 func (m *Memory) ExpirePendingTestPayments(_ context.Context, now time.Time) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -602,6 +831,7 @@ func (m *Memory) ExpirePendingTestPayments(_ context.Context, now time.Time) (in
 		v.NextCheckAt = nil
 		v.MatchConfidence = "expired_no_match"
 		m.payments[id] = v
+		m.startUniqueAmountCooldownLocked(v)
 		count++
 	}
 	return count, nil

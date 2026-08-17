@@ -154,4 +154,21 @@ describe("TenantConsole credentials and documentation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Edit Alpakyros LITE" }));
     expect(screen.getByRole("checkbox", { name: "Gunakan kode unik nominal" })).toBeChecked();
   });
+
+  it("persists a bounded unique amount cooldown", async () => {
+    const merchant = { id: "merchant_qris", interactive_merchant_id: "00828", name: "QRIS", active: true, created_at: "2026-08-14T00:00:00Z" };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      id: tenant.id, name: tenant.name, merchant_id: tenant.merchantId, site_url: tenant.siteUrl,
+      callback_url: "", webhook_url: "", sandbox_mode: false, use_unique_amount_code: true,
+      unique_amount_cooldown_minutes: 45, active: true, created_at: tenant.createdAt,
+    }), { status: 200 }));
+    render(<TenantConsole initialTenants={[{ ...tenant, useUniqueAmountCode: true, uniqueAmountCooldownMinutes: 30 }]} merchants={[merchant]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit Alpakyros LITE" }));
+    fireEvent.change(screen.getByLabelText(/Cooldown kode unik/), { target: { value: "45" } });
+    fireEvent.click(screen.getByRole("button", { name: "Simpan perubahan" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ unique_amount_cooldown_minutes: 45 });
+    fireEvent.click(screen.getByRole("button", { name: "Edit Alpakyros LITE" }));
+    expect(screen.getByLabelText(/Cooldown kode unik/)).toHaveValue(45);
+  });
 });

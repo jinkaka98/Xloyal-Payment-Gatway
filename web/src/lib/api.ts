@@ -43,6 +43,7 @@ interface ApiTenant {
   webhook_url?: string;
   sandbox_mode: boolean;
   use_unique_amount_code?: boolean;
+  unique_amount_cooldown_minutes?: number;
   active: boolean;
   api_key_recoverable?: boolean;
   created_at: string;
@@ -174,7 +175,7 @@ export const api = {
   async getTenants(): Promise<Tenant[]> {
     if (USE_MOCK) return [];
     const items = await request<ApiTenant[]>("/admin/tenants", []);
-    return items.map((item) => ({ id: item.id, name: item.name, merchantId: item.merchant_id ?? "", siteUrl: item.site_url ?? "", callbackUrl: item.callback_url ?? "", webhookUrl: item.webhook_url ?? "", sandboxMode: item.sandbox_mode, useUniqueAmountCode: item.use_unique_amount_code ?? false, active: item.active, apiKeyRecoverable: item.api_key_recoverable, createdAt: item.created_at }));
+    return items.map((item) => ({ id: item.id, name: item.name, merchantId: item.merchant_id ?? "", siteUrl: item.site_url ?? "", callbackUrl: item.callback_url ?? "", webhookUrl: item.webhook_url ?? "", sandboxMode: item.sandbox_mode, useUniqueAmountCode: item.use_unique_amount_code ?? false, uniqueAmountCooldownMinutes: item.unique_amount_cooldown_minutes ?? 30, active: item.active, apiKeyRecoverable: item.api_key_recoverable, createdAt: item.created_at }));
   },
   async getMerchantAccounts(): Promise<MerchantAccount[]> {
     if (USE_MOCK) return [];

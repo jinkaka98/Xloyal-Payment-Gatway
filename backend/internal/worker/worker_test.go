@@ -1,8 +1,12 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +14,113 @@ import (
 	"xloyal/backend/internal/gateway"
 	"xloyal/backend/internal/store"
 )
+
+func TestValidationCycleProcessesOneHundredFiftyClientsWithOneBrowserSync(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemory()
+	now := time.Date(2026, 8, 17, 14, 0, 0, 0, time.UTC)
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-test"})
+	repo.UpsertMerchantConnection(ctx, domain.MerchantConnection{MerchantID: "merchant-test", Status: domain.ConnectionConnected, UpdatedAt: now.Add(-time.Hour)})
+	for i := 0; i < 150; i++ {
+		createdAt := now.Add(-time.Minute).Add(time.Duration(i) * time.Millisecond)
+		if err := repo.CreateTestPayment(ctx, domain.TestPayment{
+			ID: "payment-" + strconv.Itoa(i), QRISTemplateID: "template-test", MerchantID: "merchant-test", TenantID: "tenant-" + strconv.Itoa(i),
+			Amount: int64(10_000 + i), PayableAmount: int64(10_000 + i), Status: domain.InvoicePending, RequestSource: "tenant_api",
+			CreatedAt: createdAt, UpdatedAt: createdAt, ExpiresAt: now.Add(10 * time.Minute),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var output bytes.Buffer
+	syncCalls := 0
+	w := Worker{
+		Repo: repo, Now: func() time.Time { return now }, Logger: slog.New(slog.NewJSONHandler(&output, nil)),
+		SyncMerchant: func(context.Context, domain.MerchantConnection) ([]domain.PortalTransaction, error) {
+			syncCalls++
+			return nil, nil
+		},
+	}
+	if err := w.validateTestPayments(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if syncCalls != 1 {
+		t.Fatalf("browser sync calls=%d", syncCalls)
+	}
+	for i := 0; i < 150; i++ {
+		payment, err := repo.TestPayment(ctx, "payment-"+strconv.Itoa(i))
+		if err != nil || payment.CheckCount != 1 {
+			t.Fatalf("payment %d check_count=%d err=%v", i, payment.CheckCount, err)
+		}
+	}
+	logOutput := output.String()
+	if !strings.Contains(logOutput, `"msg":"qris validation cycle completed"`) || !strings.Contains(logOutput, `"queued_payments":150`) || !strings.Contains(logOutput, `"merchants":1`) {
+		t.Fatalf("cycle log=%s", logOutput)
+	}
+}
+
+func TestValidationCycleSkipsDisconnectedPaymentsBeforeHealthyMerchant(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemory()
+	now := time.Date(2026, 8, 17, 14, 30, 0, 0, time.UTC)
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-test"})
+	repo.UpsertMerchantConnection(ctx, domain.MerchantConnection{MerchantID: "merchant-healthy", Status: domain.ConnectionConnected, UpdatedAt: now.Add(-time.Hour)})
+	repo.UpsertMerchantConnection(ctx, domain.MerchantConnection{MerchantID: "merchant-disconnected", Status: domain.ConnectionReconnectRequired, UpdatedAt: now.Add(-time.Hour)})
+	for i := 0; i < TestPaymentBatchSize; i++ {
+		createdAt := now.Add(-2 * time.Minute).Add(time.Duration(i) * time.Millisecond)
+		if err := repo.CreateTestPayment(ctx, domain.TestPayment{ID: "disconnected-" + strconv.Itoa(i), QRISTemplateID: "template-test", MerchantID: "merchant-disconnected", Amount: int64(20_000 + i), PayableAmount: int64(20_000 + i), Status: domain.InvoicePending, CreatedAt: createdAt, UpdatedAt: createdAt, ExpiresAt: now.Add(time.Minute), NextCheckAt: ptrTime(now.Add(-time.Second))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	createdAt := now.Add(-time.Minute)
+	if err := repo.CreateTestPayment(ctx, domain.TestPayment{ID: "healthy-payment", QRISTemplateID: "template-test", MerchantID: "merchant-healthy", Amount: 10_000, PayableAmount: 10_000, Status: domain.InvoicePending, CreatedAt: createdAt, UpdatedAt: createdAt, ExpiresAt: now.Add(time.Minute), NextCheckAt: ptrTime(now.Add(-time.Second))}); err != nil {
+		t.Fatal(err)
+	}
+	w := Worker{Repo: repo, Now: func() time.Time { return now }, SyncMerchant: func(context.Context, domain.MerchantConnection) ([]domain.PortalTransaction, error) { return nil, nil }}
+	if err := w.validateTestPayments(ctx); err != nil {
+		t.Fatal(err)
+	}
+	healthy, err := repo.TestPayment(ctx, "healthy-payment")
+	if err != nil || healthy.CheckCount != 1 {
+		t.Fatalf("healthy payment was starved check_count=%d err=%v", healthy.CheckCount, err)
+	}
+}
+
+func ptrTime(value time.Time) *time.Time { return &value }
+
+func TestManualLoginBrowserJobQueuesFollowupSyncThroughWorker(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemory()
+	now := time.Date(2026, 8, 17, 15, 0, 0, 0, time.UTC)
+	repo.UpsertMerchantConnection(ctx, domain.MerchantConnection{MerchantID: "merchant-a", Status: domain.ConnectionReconnectRequired, UpdatedAt: now})
+	_, _, err := repo.EnqueueBrowserJob(ctx, domain.BrowserJob{ID: "manual-job", ResourceKey: "neko-shared", MerchantID: "merchant-a", Kind: "manual_login", Priority: 100, State: "queued", NotBefore: now, RequestedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manualCalls, syncCalls := 0, 0
+	w := Worker{
+		Repo: repo, JobOwner: "worker-test", Now: func() time.Time { return now },
+		ManualLogin: func(context.Context, domain.MerchantConnection) error {
+			manualCalls++
+			return nil
+		},
+		SyncMerchant: func(context.Context, domain.MerchantConnection) ([]domain.PortalTransaction, error) {
+			syncCalls++
+			return nil, nil
+		},
+	}
+	processed, err := w.processNextBrowserJob(ctx)
+	if err != nil || !processed || manualCalls != 1 || syncCalls != 0 {
+		t.Fatalf("manual processed=%v manual=%d sync=%d err=%v", processed, manualCalls, syncCalls, err)
+	}
+	processed, err = w.processNextBrowserJob(ctx)
+	if err != nil || !processed || syncCalls != 1 {
+		t.Fatalf("followup processed=%v sync=%d err=%v", processed, syncCalls, err)
+	}
+	connection, _ := repo.MerchantConnection(ctx, "merchant-a")
+	if connection.Status != domain.ConnectionConnected || connection.LastError != "" {
+		t.Fatalf("connection=%+v", connection)
+	}
+}
 
 func TestOnePortalTransactionCannotArbitrarilyPaySameAmountRequests(t *testing.T) {
 	ctx := context.Background()

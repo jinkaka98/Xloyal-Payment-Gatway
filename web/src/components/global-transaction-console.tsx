@@ -64,8 +64,14 @@ export function GlobalTransactionConsole({ initialItems }: { initialItems: Globa
 
   useEffect(() => {
     if (autoReload === 0) return;
-    const timer = window.setInterval(() => void reload(), autoReload * 60_000);
-    return () => window.clearInterval(timer);
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      await reload();
+      if (!cancelled) timer = window.setTimeout(poll, autoReload * 60_000);
+    };
+    timer = window.setTimeout(poll, autoReload * 60_000);
+    return () => { cancelled = true; if (timer !== undefined) window.clearTimeout(timer); };
   }, [autoReload, reload]);
 
   const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
