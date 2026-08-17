@@ -75,8 +75,7 @@ func (w Worker) syncConnections(ctx context.Context, now time.Time, connections 
 		return nil
 	}
 	for _, connection := range connections {
-		connection.Status = domain.ConnectionReconnectRequired
-		connection.LastError = "Manual browser login in progress"
+		connection.LastError = "Browser sync in progress"
 		connection.UpdatedAt = now
 		if err := w.Repo.UpsertMerchantConnection(ctx, connection); err != nil {
 			return err

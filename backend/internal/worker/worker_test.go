@@ -481,18 +481,18 @@ func TestReconnectRequiredConnectionIsProcessed(t *testing.T) {
 	}
 }
 
-func TestMerchantSyncMarksBrowserLoginInProgressBeforeCheckerStarts(t *testing.T) {
+func TestMerchantSyncKeepsConnectedStatusWhileCheckerRuns(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemory()
 	now := time.Date(2026, 8, 14, 4, 0, 0, 0, time.UTC)
-	repo.UpsertMerchantConnection(ctx, domain.MerchantConnection{MerchantID: "merchant_1", Status: domain.ConnectionReconnectRequired, UpdatedAt: now.Add(-10 * time.Minute)})
+	repo.UpsertMerchantConnection(ctx, domain.MerchantConnection{MerchantID: "merchant_1", Status: domain.ConnectionConnected, UpdatedAt: now.Add(-10 * time.Minute)})
 	w := Worker{Repo: repo, Now: func() time.Time { return now }, SyncMerchant: func(ctx context.Context, connection domain.MerchantConnection) ([]domain.PortalTransaction, error) {
 		current, err := repo.MerchantConnection(ctx, connection.MerchantID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if current.LastError != "Manual browser login in progress" {
-			t.Fatalf("checker started without browser ownership state: %+v", current)
+		if current.Status != domain.ConnectionConnected || current.LastError != "Browser sync in progress" {
+			t.Fatalf("healthy connection was presented as disconnected during sync: %+v", current)
 		}
 		return nil, context.DeadlineExceeded
 	}}
