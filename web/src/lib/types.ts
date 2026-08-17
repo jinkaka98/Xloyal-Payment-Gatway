@@ -10,6 +10,7 @@ export interface Tenant {
   callbackUrl: string;
   webhookUrl: string;
   sandboxMode: boolean;
+  useUniqueAmountCode?: boolean;
   active: boolean;
   apiKeyRecoverable?: boolean | undefined;
   createdAt: string;
@@ -80,6 +81,8 @@ export interface TenantTransaction {
   requestSource: string;
   idempotencyKey: string;
   amount: number;
+  payableAmount: number;
+  uniqueAmountCode: number;
   currency: "IDR";
   status: InvoiceStatus;
   providerReference: string;

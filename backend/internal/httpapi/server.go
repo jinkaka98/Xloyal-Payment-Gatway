@@ -543,18 +543,20 @@ func (s Server) listTenantTransactions(w http.ResponseWriter, r *http.Request, t
 
 type tenantQRISResponse struct {
 	domain.TestPayment
-	TemplateID  string `json:"template_id"`
-	Currency    string `json:"currency"`
-	QRPayload   string `json:"qr_payload,omitempty"`
-	QRPNGBase64 string `json:"qr_png_base64,omitempty"`
-	StatusURL   string `json:"status_url"`
-	QRURL       string `json:"qr_url"`
+	TemplateID      string `json:"template_id"`
+	Currency        string `json:"currency"`
+	RequestedAmount int64  `json:"requested_amount"`
+	QRPayload       string `json:"qr_payload,omitempty"`
+	QRPNGBase64     string `json:"qr_png_base64,omitempty"`
+	StatusURL       string `json:"status_url"`
+	QRURL           string `json:"qr_url"`
 }
 
 func tenantPaymentLog(payment domain.TestPayment) map[string]any {
 	return map[string]any{
 		"id": payment.ID, "tenant_id": payment.TenantID, "merchant_id": payment.MerchantID,
-		"reference": payment.UniqueCode, "amount": payment.Amount, "status": payment.Status,
+		"reference": payment.UniqueCode, "amount": payment.Amount, "requested_amount": payment.Amount,
+		"payable_amount": payment.PayableAmount, "unique_amount_code": payment.UniqueAmountCode, "status": payment.Status,
 		"source": "tenant_qris", "request_source": payment.RequestSource,
 		"match_confidence": payment.MatchConfidence, "created_at": payment.CreatedAt,
 		"expires_at": payment.ExpiresAt, "last_checked_at": payment.LastCheckedAt,
@@ -639,26 +641,18 @@ func (s Server) createTenantQRIS(w http.ResponseWriter, r *http.Request, tenant 
 		problem(w, http.StatusConflict, "tenant is not linked to a Merchant ID")
 		return
 	}
-	payload, err := qrisservice.Convert(template.StaticPayload, in.Amount)
-	if err != nil {
-		problem(w, http.StatusBadRequest, err.Error())
+	if in.Amount <= 0 || in.Amount > 100_000_000 {
+		problem(w, http.StatusBadRequest, "amount must be between 1 and 100000000")
+		return
+	}
+	if tenant.UseUniqueAmountCode && in.Amount > 99_999_901 {
+		problem(w, http.StatusBadRequest, "amount must not exceed 99999901 when unique amount codes are enabled")
 		return
 	}
 	now := time.Now().UTC()
 	maxRequests := template.MaxRequestsPM
 	if maxRequests < 1 {
 		maxRequests = 60
-	}
-	uniqueCode := newUniqueCode()
-	payload, err = qrisservice.WithBillNumber(payload, uniqueCode)
-	if err != nil {
-		problem(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	png, err := qrisservice.PNG(payload)
-	if err != nil {
-		problem(w, http.StatusInternalServerError, "QRIS image generation failed")
-		return
 	}
 	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if key == "" {
@@ -679,41 +673,79 @@ func (s Server) createTenantQRIS(w http.ResponseWriter, r *http.Request, tenant 
 		}
 		expiresIn = in.ExpiresInSeconds
 	}
-	payment := domain.TestPayment{
-		ID: newID(), IdempotencyKey: key, QRISTemplateID: template.ID, MerchantID: tenant.MerchantID, TenantID: tenant.ID,
-		Amount: in.Amount, DynamicPayload: payload, UniqueCode: uniqueCode, Status: domain.InvoicePending,
-		RequestSource: "tenant_api", MatchConfidence: "waiting_first_check", SandboxMode: tenant.SandboxMode, CreatedAt: now, UpdatedAt: now,
-		ExpiresAt: now.Add(time.Duration(expiresIn) * time.Second),
+	uniqueCode := newUniqueCode()
+	codes := []int64{0}
+	if tenant.UseUniqueAmountCode {
+		codes = make([]int64, 99)
+		for i := range codes {
+			codes[i] = int64(i + 1)
+		}
 	}
-	next := now.Add(15 * time.Second)
-	payment.NextCheckAt = &next
-	stored, created, allowed, retryAfter, err := s.Repo.CreateTenantTestPayment(r.Context(), payment, now, maxRequests)
-	if errors.Is(err, store.ErrConflict) {
-		problem(w, http.StatusConflict, "idempotency key was reused with different transaction data")
+	var stored domain.TestPayment
+	var created, allowed bool
+	var retryAfter int
+	for _, amountCode := range codes {
+		payableAmount := in.Amount + amountCode
+		payload, convertErr := qrisservice.Convert(template.StaticPayload, payableAmount)
+		if convertErr != nil {
+			problem(w, http.StatusBadRequest, convertErr.Error())
+			return
+		}
+		payload, convertErr = qrisservice.WithBillNumber(payload, uniqueCode)
+		if convertErr != nil {
+			problem(w, http.StatusBadRequest, convertErr.Error())
+			return
+		}
+		payment := domain.TestPayment{
+			ID: newID(), IdempotencyKey: key, QRISTemplateID: template.ID, MerchantID: tenant.MerchantID, TenantID: tenant.ID,
+			Amount: in.Amount, PayableAmount: payableAmount, UniqueAmountCode: amountCode,
+			DynamicPayload: payload, UniqueCode: uniqueCode, Status: domain.InvoicePending,
+			RequestSource: "tenant_api", MatchConfidence: "waiting_first_check", SandboxMode: tenant.SandboxMode, CreatedAt: now, UpdatedAt: now,
+			ExpiresAt: now.Add(time.Duration(expiresIn) * time.Second),
+		}
+		next := now.Add(15 * time.Second)
+		payment.NextCheckAt = &next
+		stored, created, allowed, retryAfter, err = s.Repo.CreateTenantTestPayment(r.Context(), payment, now, maxRequests)
+		if errors.Is(err, store.ErrUniqueAmountUnavailable) {
+			continue
+		}
+		if errors.Is(err, store.ErrConflict) {
+			problem(w, http.StatusConflict, "idempotency key was reused with different transaction data")
+			return
+		}
+		if err != nil {
+			problem(w, http.StatusInternalServerError, "save QRIS transaction failed")
+			return
+		}
+		if !allowed {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			problem(w, http.StatusTooManyRequests, "QRIS request limit exceeded")
+			return
+		}
+		break
+	}
+	if stored.ID == "" {
+		if tenant.UseUniqueAmountCode {
+			w.Header().Set("Retry-After", "30")
+			problem(w, http.StatusTooManyRequests, "all unique amount codes are currently reserved")
+			return
+		}
+		problem(w, http.StatusConflict, "another pending transaction uses the same merchant and amount")
 		return
 	}
-	if err != nil {
-		problem(w, http.StatusInternalServerError, "save QRIS transaction failed")
-		return
-	}
-	if !allowed {
-		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-		problem(w, http.StatusTooManyRequests, "QRIS request limit exceeded")
-		return
-	}
-	png, err = qrisservice.PNG(stored.DynamicPayload)
+	png, err := qrisservice.PNG(stored.DynamicPayload)
 	if err != nil {
 		problem(w, http.StatusInternalServerError, "QRIS image generation failed")
 		return
 	}
 	if created {
-		s.Repo.AppendAudit(r.Context(), domain.AuditEvent{ID: newID(), TenantID: tenant.ID, Actor: "tenant_api", Action: "qris.transaction_created", ResourceType: "test_payment", ResourceID: stored.ID, Metadata: map[string]any{"amount": stored.Amount}, CreatedAt: now})
+		s.Repo.AppendAudit(r.Context(), domain.AuditEvent{ID: newID(), TenantID: tenant.ID, Actor: "tenant_api", Action: "qris.transaction_created", ResourceType: "test_payment", ResourceID: stored.ID, Metadata: map[string]any{"requested_amount": stored.Amount, "payable_amount": stored.PayableAmount, "unique_amount_code": stored.UniqueAmountCode}, CreatedAt: now})
 	}
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
 	}
-	write(w, status, tenantQRISResponse{TestPayment: stored, TemplateID: stored.QRISTemplateID, Currency: "IDR", QRPayload: stored.DynamicPayload, QRPNGBase64: base64.StdEncoding.EncodeToString(png), StatusURL: "/v1/tenants/" + tenant.ID + "/transactions/qris/" + stored.ID, QRURL: "/v1/tenants/" + tenant.ID + "/transactions/qris/" + stored.ID + "/qr"})
+	write(w, status, tenantQRISResponse{TestPayment: stored, TemplateID: stored.QRISTemplateID, Currency: "IDR", RequestedAmount: stored.Amount, QRPayload: stored.DynamicPayload, QRPNGBase64: base64.StdEncoding.EncodeToString(png), StatusURL: "/v1/tenants/" + tenant.ID + "/transactions/qris/" + stored.ID, QRURL: "/v1/tenants/" + tenant.ID + "/transactions/qris/" + stored.ID + "/qr"})
 }
 
 func (s Server) getTenantQRISTransaction(w http.ResponseWriter, r *http.Request, tenant domain.Tenant) {
@@ -723,7 +755,7 @@ func (s Server) getTenantQRISTransaction(w http.ResponseWriter, r *http.Request,
 		notFound(w, err)
 		return
 	}
-	response := tenantQRISResponse{TestPayment: payment, TemplateID: payment.QRISTemplateID, Currency: "IDR", StatusURL: r.URL.Path, QRURL: r.URL.Path + "/qr"}
+	response := tenantQRISResponse{TestPayment: payment, TemplateID: payment.QRISTemplateID, Currency: "IDR", RequestedAmount: payment.Amount, StatusURL: r.URL.Path, QRURL: r.URL.Path + "/qr"}
 	if payment.Status == domain.InvoicePending {
 		png, pngErr := qrisservice.PNG(payment.DynamicPayload)
 		if pngErr != nil {
@@ -823,7 +855,8 @@ func (s Server) listAdminTenantTransactions(w http.ResponseWriter, r *http.Reque
 		items = append(items, domain.TenantTransaction{
 			ID: payment.ID, TenantID: payment.TenantID, MerchantID: payment.MerchantID,
 			Kind: "qris", Mode: transactionMode(payment.SandboxMode), RequestSource: payment.RequestSource,
-			IdempotencyKey: payment.IdempotencyKey, Amount: payment.Amount, Currency: "IDR",
+			IdempotencyKey: payment.IdempotencyKey, Amount: payment.Amount, PayableAmount: payment.PayableAmount,
+			UniqueAmountCode: payment.UniqueAmountCode, Currency: "IDR",
 			Status: payment.Status, Validation: payment.MatchConfidence,
 			MatchedTransactionID: payment.MatchedTransactionID, CreatedAt: payment.CreatedAt,
 			UpdatedAt: payment.UpdatedAt, ExpiresAt: payment.ExpiresAt,
@@ -1083,12 +1116,13 @@ func (s Server) listTenants(w http.ResponseWriter, r *http.Request, _ domain.Ten
 }
 func (s Server) createTenant(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
 	var in struct {
-		Name        string `json:"name"`
-		MerchantID  string `json:"merchant_id"`
-		SiteURL     string `json:"site_url"`
-		CallbackURL string `json:"callback_url"`
-		WebhookURL  string `json:"webhook_url"`
-		SandboxMode bool   `json:"sandbox_mode"`
+		Name                string `json:"name"`
+		MerchantID          string `json:"merchant_id"`
+		SiteURL             string `json:"site_url"`
+		CallbackURL         string `json:"callback_url"`
+		WebhookURL          string `json:"webhook_url"`
+		SandboxMode         bool   `json:"sandbox_mode"`
+		UseUniqueAmountCode bool   `json:"use_unique_amount_code"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -1119,7 +1153,7 @@ func (s Server) createTenant(w http.ResponseWriter, r *http.Request, _ domain.Te
 		problem(w, http.StatusInternalServerError, "tenant credential encryption failed")
 		return
 	}
-	v := domain.Tenant{ID: "tenant_" + newID()[:16], MerchantID: merchant.ID, Name: in.Name, SiteURL: strings.TrimSpace(in.SiteURL), CallbackURL: strings.TrimSpace(in.CallbackURL), WebhookURL: strings.TrimSpace(in.WebhookURL), SandboxMode: in.SandboxMode, APIKeyHash: security.HashSecret(apiKey), APIKeyCiphertext: ciphertext, APIKeyRecoverable: true, Active: true, CreatedAt: time.Now().UTC()}
+	v := domain.Tenant{ID: "tenant_" + newID()[:16], MerchantID: merchant.ID, Name: in.Name, SiteURL: strings.TrimSpace(in.SiteURL), CallbackURL: strings.TrimSpace(in.CallbackURL), WebhookURL: strings.TrimSpace(in.WebhookURL), SandboxMode: in.SandboxMode, UseUniqueAmountCode: in.UseUniqueAmountCode, APIKeyHash: security.HashSecret(apiKey), APIKeyCiphertext: ciphertext, APIKeyRecoverable: true, Active: true, CreatedAt: time.Now().UTC()}
 	if err := s.Repo.CreateTenant(r.Context(), v); err != nil {
 		problem(w, 500, "create tenant failed")
 		return
@@ -1135,13 +1169,14 @@ func (s Server) updateTenant(w http.ResponseWriter, r *http.Request, _ domain.Te
 		return
 	}
 	var in struct {
-		Name        string `json:"name"`
-		MerchantID  string `json:"merchant_id"`
-		SiteURL     string `json:"site_url"`
-		CallbackURL string `json:"callback_url"`
-		WebhookURL  string `json:"webhook_url"`
-		SandboxMode bool   `json:"sandbox_mode"`
-		Active      bool   `json:"active"`
+		Name                string `json:"name"`
+		MerchantID          string `json:"merchant_id"`
+		SiteURL             string `json:"site_url"`
+		CallbackURL         string `json:"callback_url"`
+		WebhookURL          string `json:"webhook_url"`
+		SandboxMode         bool   `json:"sandbox_mode"`
+		UseUniqueAmountCode *bool  `json:"use_unique_amount_code"`
+		Active              bool   `json:"active"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -1163,6 +1198,9 @@ func (s Server) updateTenant(w http.ResponseWriter, r *http.Request, _ domain.Te
 		}
 	}
 	current.Name, current.MerchantID, current.SiteURL, current.CallbackURL, current.WebhookURL, current.SandboxMode, current.Active = in.Name, merchant.ID, strings.TrimSpace(in.SiteURL), strings.TrimSpace(in.CallbackURL), strings.TrimSpace(in.WebhookURL), in.SandboxMode, in.Active
+	if in.UseUniqueAmountCode != nil {
+		current.UseUniqueAmountCode = *in.UseUniqueAmountCode
+	}
 	if err = s.Repo.UpdateTenant(r.Context(), current); err != nil {
 		problem(w, http.StatusInternalServerError, "update tenant failed")
 		return
@@ -1735,13 +1773,17 @@ func (s Server) createTestPayment(w http.ResponseWriter, r *http.Request, _ doma
 	matchConfidence := "waiting_first_check"
 	payment := domain.TestPayment{
 		ID: newID(), QRISTemplateID: template.ID, MerchantID: merchantID, TenantID: tenantID,
-		Amount: in.Amount, DynamicPayload: payload, UniqueCode: uniqueCode, Status: domain.InvoicePending,
+		Amount: in.Amount, PayableAmount: in.Amount, DynamicPayload: payload, UniqueCode: uniqueCode, Status: domain.InvoicePending,
 		RequestSource: "admin_qris_test", MatchConfidence: matchConfidence,
 		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(30 * time.Minute),
 	}
 	nextCheck := now.Add(15 * time.Second)
 	payment.NextCheckAt = &nextCheck
 	if err := s.Repo.CreateTestPayment(r.Context(), payment); err != nil {
+		if errors.Is(err, store.ErrUniqueAmountUnavailable) {
+			problem(w, http.StatusConflict, "another pending transaction uses the same merchant and amount")
+			return
+		}
 		problem(w, http.StatusInternalServerError, "save test payment failed")
 		return
 	}

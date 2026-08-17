@@ -87,6 +87,16 @@ describe("TenantConsole credentials and documentation", () => {
     expect(screen.getByText(/Request browser hanya diterima dari origin/)).not.toHaveTextContent("/store");
   });
 
+  it("documents unique amount fields and the payable amount example", () => {
+    render(<TenantConsole initialTenants={[{ ...tenant, useUniqueAmountCode: true }]} merchants={[]} qrisTemplates={templates} />);
+    fireEvent.click(screen.getByRole("button", { name: "Dokumentasi Alpakyros LITE" }));
+
+    expect(screen.getByText(/^requested_amount:/)).toHaveTextContent("Rp10.000");
+    expect(screen.getByText(/^payable_amount:/)).toHaveTextContent("Rp10.037");
+    expect(screen.getByText(/^unique_amount_code:/)).toHaveTextContent("37");
+    expect(screen.getByText(/Bayar tepat/)).toHaveTextContent("Rp10.037");
+  });
+
   it("persists sandbox mode from edit and shows the updated state", async () => {
     const merchant = { id: "merchant_qris", interactive_merchant_id: "00828", name: "QRIS", active: true, created_at: "2026-08-14T00:00:00Z" };
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
@@ -114,5 +124,34 @@ describe("TenantConsole credentials and documentation", () => {
     const sandboxToggle = screen.getByRole("checkbox", { name: "Sandbox mode" });
     expect(sandboxToggle).toBeChecked();
     expect(sandboxToggle).toHaveAccessibleDescription("Izinkan request browser dari origin mana pun. API key tetap wajib.");
+  });
+
+  it("persists the unique amount code setting from edit", async () => {
+    const merchant = { id: "merchant_qris", interactive_merchant_id: "00828", name: "QRIS", active: true, created_at: "2026-08-14T00:00:00Z" };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      id: tenant.id,
+      name: tenant.name,
+      merchant_id: tenant.merchantId,
+      site_url: tenant.siteUrl,
+      callback_url: "",
+      webhook_url: "",
+      sandbox_mode: false,
+      use_unique_amount_code: true,
+      active: true,
+      created_at: tenant.createdAt,
+    }), { status: 200 }));
+    render(<TenantConsole initialTenants={[{ ...tenant, useUniqueAmountCode: false }]} merchants={[merchant]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Alpakyros LITE" }));
+    const toggle = screen.getByRole("checkbox", { name: "Gunakan kode unik nominal" });
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole("button", { name: "Simpan perubahan" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const request = fetchMock.mock.calls[0]?.[1];
+    expect(JSON.parse(String(request?.body))).toMatchObject({ use_unique_amount_code: true });
+    fireEvent.click(screen.getByRole("button", { name: "Edit Alpakyros LITE" }));
+    expect(screen.getByRole("checkbox", { name: "Gunakan kode unik nominal" })).toBeChecked();
   });
 });

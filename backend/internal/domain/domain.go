@@ -48,18 +48,19 @@ func (i *Invoice) Transition(next InvoiceStatus, now time.Time) error {
 }
 
 type Tenant struct {
-	ID                string    `json:"id"`
-	MerchantID        string    `json:"merchant_id,omitempty"`
-	Name              string    `json:"name"`
-	SiteURL           string    `json:"site_url,omitempty"`
-	CallbackURL       string    `json:"callback_url,omitempty"`
-	WebhookURL        string    `json:"webhook_url,omitempty"`
-	SandboxMode       bool      `json:"sandbox_mode"`
-	APIKeyHash        string    `json:"-"`
-	APIKeyCiphertext  string    `json:"-"`
-	APIKeyRecoverable bool      `json:"api_key_recoverable"`
-	Active            bool      `json:"active"`
-	CreatedAt         time.Time `json:"created_at"`
+	ID                  string    `json:"id"`
+	MerchantID          string    `json:"merchant_id,omitempty"`
+	Name                string    `json:"name"`
+	SiteURL             string    `json:"site_url,omitempty"`
+	CallbackURL         string    `json:"callback_url,omitempty"`
+	WebhookURL          string    `json:"webhook_url,omitempty"`
+	SandboxMode         bool      `json:"sandbox_mode"`
+	UseUniqueAmountCode bool      `json:"use_unique_amount_code"`
+	APIKeyHash          string    `json:"-"`
+	APIKeyCiphertext    string    `json:"-"`
+	APIKeyRecoverable   bool      `json:"api_key_recoverable"`
+	Active              bool      `json:"active"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 type MerchantID struct {
 	ID                    string    `json:"id"`
@@ -154,6 +155,8 @@ type TestPayment struct {
 	MerchantID           string        `json:"merchant_id,omitempty"`
 	TenantID             string        `json:"tenant_id,omitempty"`
 	Amount               int64         `json:"amount"`
+	PayableAmount        int64         `json:"payable_amount"`
+	UniqueAmountCode     int64         `json:"unique_amount_code"`
 	DynamicPayload       string        `json:"dynamic_payload"`
 	UniqueCode           string        `json:"unique_code"`
 	Status               InvoiceStatus `json:"status"`
@@ -178,6 +181,8 @@ type TenantTransaction struct {
 	RequestSource        string        `json:"request_source"`
 	IdempotencyKey       string        `json:"idempotency_key,omitempty"`
 	Amount               int64         `json:"amount"`
+	PayableAmount        int64         `json:"payable_amount"`
+	UniqueAmountCode     int64         `json:"unique_amount_code"`
 	Currency             string        `json:"currency"`
 	Status               InvoiceStatus `json:"status"`
 	ProviderReference    string        `json:"provider_reference,omitempty"`

@@ -11,8 +11,9 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("not found")
-	ErrConflict = errors.New("conflict")
+	ErrNotFound                = errors.New("not found")
+	ErrConflict                = errors.New("conflict")
+	ErrUniqueAmountUnavailable = errors.New("unique amount unavailable")
 )
 
 type Repository interface {
@@ -446,6 +447,13 @@ func (m *Memory) CreateTestPayment(_ context.Context, v domain.TestPayment) erro
 		next := v.CreatedAt.Add(15 * time.Second)
 		v.NextCheckAt = &next
 	}
+	if reservesPayableAmount(v) {
+		for _, existing := range m.payments {
+			if existing.Status == domain.InvoicePending && existing.MerchantID == v.MerchantID && effectivePayableAmount(existing) == effectivePayableAmount(v) && existing.ExpiresAt.After(v.CreatedAt) {
+				return ErrUniqueAmountUnavailable
+			}
+		}
+	}
 	m.payments[v.ID] = v
 	return nil
 }
@@ -463,6 +471,11 @@ func (m *Memory) CreateTenantTestPayment(_ context.Context, v domain.TestPayment
 			return domain.TestPayment{}, false, false, 0, ErrConflict
 		}
 		return existing, false, true, 0, nil
+	}
+	for _, existing := range m.payments {
+		if existing.Status == domain.InvoicePending && existing.MerchantID == v.MerchantID && effectivePayableAmount(existing) == effectivePayableAmount(v) && existing.ExpiresAt.After(now) {
+			return domain.TestPayment{}, false, false, 0, ErrUniqueAmountUnavailable
+		}
 	}
 	windowStart := now.UTC().Truncate(time.Minute)
 	rateKey := v.QRISTemplateID + "\x00" + v.TenantID
@@ -485,6 +498,17 @@ func (m *Memory) CreateTenantTestPayment(_ context.Context, v domain.TestPayment
 	}
 	m.payments[v.ID] = v
 	return v, true, true, 0, nil
+}
+
+func effectivePayableAmount(v domain.TestPayment) int64 {
+	if v.PayableAmount > 0 {
+		return v.PayableAmount
+	}
+	return v.Amount
+}
+
+func reservesPayableAmount(v domain.TestPayment) bool {
+	return v.Status == domain.InvoicePending && v.MerchantID != "" && (v.RequestSource == "tenant_api" || v.RequestSource == "admin_qris_test")
 }
 func (m *Memory) TestPayment(_ context.Context, id string) (domain.TestPayment, error) {
 	m.mu.Lock()

@@ -20,7 +20,7 @@ func TestOnePortalTransactionCannotArbitrarilyPaySameAmountRequests(t *testing.T
 	for _, id := range []string{"payment-a", "payment-b"} {
 		repo.CreateTestPayment(ctx, domain.TestPayment{
 			ID: id, QRISTemplateID: "template-test", MerchantID: "merchant-test", TenantID: "tenant-test",
-			Amount: 1013, Status: domain.InvoicePending, RequestSource: "tenant_api",
+			Amount: 1013, Status: domain.InvoicePending, RequestSource: "legacy_fixture",
 			CreatedAt: createdAt, UpdatedAt: createdAt, ExpiresAt: now.Add(10 * time.Minute),
 		})
 	}
@@ -38,6 +38,27 @@ func TestOnePortalTransactionCannotArbitrarilyPaySameAmountRequests(t *testing.T
 		if payment.Status != domain.InvoicePending {
 			t.Fatalf("ambiguous request %s was marked %s", id, payment.Status)
 		}
+	}
+}
+
+func TestUniquePayableAmountMatchesTheCorrectSameValueOrder(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemory()
+	now := time.Date(2026, 8, 17, 10, 0, 0, 0, time.UTC)
+	createdAt := now.Add(-time.Minute)
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-test"})
+	repo.CreateTestPayment(ctx, domain.TestPayment{ID: "payment-a", QRISTemplateID: "template-test", MerchantID: "merchant-test", TenantID: "tenant-a", Amount: 10000, PayableAmount: 10001, UniqueAmountCode: 1, Status: domain.InvoicePending, RequestSource: "tenant_api", CreatedAt: createdAt, UpdatedAt: createdAt, ExpiresAt: now.Add(10 * time.Minute)})
+	repo.CreateTestPayment(ctx, domain.TestPayment{ID: "payment-b", QRISTemplateID: "template-test", MerchantID: "merchant-test", TenantID: "tenant-b", Amount: 10000, PayableAmount: 10002, UniqueAmountCode: 2, Status: domain.InvoicePending, RequestSource: "tenant_api", CreatedAt: createdAt, UpdatedAt: createdAt, ExpiresAt: now.Add(10 * time.Minute)})
+	repo.CreatePortalTransaction(ctx, domain.PortalTransaction{ID: "portal-b", MerchantID: "merchant-test", Reference: "portal-ref", Amount: 10002, Status: "paid", PaidAt: createdAt.Add(20 * time.Second), Source: "browser", CreatedAt: now})
+
+	w := Worker{Repo: repo, Now: func() time.Time { return now }}
+	if err := w.checkTestPayments(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := repo.TestPayment(ctx, "payment-a")
+	b, _ := repo.TestPayment(ctx, "payment-b")
+	if a.Status != domain.InvoicePending || b.Status != domain.InvoicePaid || b.MatchedTransactionID != "portal-b" {
+		t.Fatalf("payment-a=%+v payment-b=%+v", a, b)
 	}
 }
 

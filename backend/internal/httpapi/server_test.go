@@ -291,7 +291,7 @@ func TestCreateTenantGeneratesCredentialsAndPersistsConnectivity(t *testing.T) {
 	repo.CreateMerchantID(context.Background(), domain.MerchantID{ID: "interactive-browser", Name: "InterActive QRIS browser", Active: true})
 	h := Server{Repo: repo, Cipher: cipher, AdminTokens: map[string]string{"admin": "super_admin"}}.Handler()
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/admin/tenants", strings.NewReader(`{"name":"Website utama","merchant_id":"interactive-browser","site_url":"https://shop.example","callback_url":"https://shop.example/qris/callback","webhook_url":"https://shop.example/webhooks/qris","sandbox_mode":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/admin/tenants", strings.NewReader(`{"name":"Website utama","merchant_id":"interactive-browser","site_url":"https://shop.example","callback_url":"https://shop.example/qris/callback","webhook_url":"https://shop.example/webhooks/qris","sandbox_mode":true,"use_unique_amount_code":true}`))
 	req.Header.Set("Authorization", "Bearer admin")
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusCreated {
@@ -308,7 +308,7 @@ func TestCreateTenantGeneratesCredentialsAndPersistsConnectivity(t *testing.T) {
 	if !strings.HasPrefix(response.Tenant.ID, "tenant_") || !strings.HasPrefix(response.APIKey, "xl_live_") || !response.APIKeyVisibleOnce {
 		t.Fatalf("generated response=%+v", response)
 	}
-	if response.Tenant.MerchantID != "interactive-browser" || response.Tenant.SiteURL != "https://shop.example" || response.Tenant.CallbackURL == "" || response.Tenant.WebhookURL == "" || !response.Tenant.SandboxMode {
+	if response.Tenant.MerchantID != "interactive-browser" || response.Tenant.SiteURL != "https://shop.example" || response.Tenant.CallbackURL == "" || response.Tenant.WebhookURL == "" || !response.Tenant.SandboxMode || !response.Tenant.UseUniqueAmountCode {
 		t.Fatalf("tenant=%+v", response.Tenant)
 	}
 	authenticated, err := repo.TenantByAPIKey(context.Background(), security.HashSecret(response.APIKey))
@@ -430,15 +430,23 @@ func TestUpdateTenantKeepsAPIKeyAndChangesConnectivity(t *testing.T) {
 	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", MerchantID: "merchant-a", Name: "Old", APIKeyHash: security.HashSecret("tenant-key"), APIKeyCiphertext: "encrypted-key", Active: true, CreatedAt: time.Now().UTC()})
 	h := Server{Repo: repo, AdminTokens: map[string]string{"admin": "super_admin"}}.Handler()
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/admin/tenants/tenant-a", strings.NewReader(`{"name":"Updated tenant","merchant_id":"merchant-b","site_url":"https://new.example","callback_url":"","webhook_url":"https://new.example/qris","sandbox_mode":true,"active":false}`))
+	req := httptest.NewRequest(http.MethodPut, "/admin/tenants/tenant-a", strings.NewReader(`{"name":"Updated tenant","merchant_id":"merchant-b","site_url":"https://new.example","callback_url":"","webhook_url":"https://new.example/qris","sandbox_mode":true,"use_unique_amount_code":true,"active":false}`))
 	req.Header.Set("Authorization", "Bearer admin")
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"merchant_id":"merchant-b"`) || !strings.Contains(w.Body.String(), `"active":false`) {
 		t.Fatalf("update code=%d body=%s", w.Code, w.Body.String())
 	}
 	stored, err := repo.Tenant(ctx, "tenant-a")
-	if err != nil || stored.Name != "Updated tenant" || stored.SiteURL != "https://new.example" || !stored.SandboxMode || stored.APIKeyHash != security.HashSecret("tenant-key") || stored.APIKeyCiphertext != "encrypted-key" {
+	if err != nil || stored.Name != "Updated tenant" || stored.SiteURL != "https://new.example" || !stored.SandboxMode || !stored.UseUniqueAmountCode || stored.APIKeyHash != security.HashSecret("tenant-key") || stored.APIKeyCiphertext != "encrypted-key" {
 		t.Fatalf("stored=%+v err=%v", stored, err)
+	}
+	legacy := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/admin/tenants/tenant-a", strings.NewReader(`{"name":"Legacy client update","merchant_id":"merchant-b","site_url":"https://new.example","callback_url":"","webhook_url":"https://new.example/qris","sandbox_mode":true,"active":false}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(legacy, req)
+	stored, err = repo.Tenant(ctx, "tenant-a")
+	if legacy.Code != http.StatusOK || err != nil || !stored.UseUniqueAmountCode {
+		t.Fatalf("legacy update code=%d stored=%+v err=%v", legacy.Code, stored, err)
 	}
 }
 
@@ -675,7 +683,7 @@ func TestTenantCanGenerateDynamicQRISOnlyFromOwnedEnabledTemplate(t *testing.T) 
 	}
 
 	limited := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-a/qris/dynamic", strings.NewReader(`{"template_id":"template-a","amount":50000}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-a/qris/dynamic", strings.NewReader(`{"template_id":"template-a","amount":50001}`))
 	req.Header.Set("X-API-Key", "key-a")
 	h.ServeHTTP(limited, req)
 	if limited.Code != http.StatusTooManyRequests || limited.Header().Get("Retry-After") == "" {
@@ -840,6 +848,91 @@ func TestTenantQRISTransactionRoutesPersistAndAreIdempotent(t *testing.T) {
 	}
 }
 
+func TestTenantQRISUniqueAmountAllocatesDistinctPayableAmounts(t *testing.T) {
+	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
+	repo := store.NewMemory()
+	ctx := context.Background()
+	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", MerchantID: "merchant-a", UseUniqueAmountCode: true, APIKeyHash: security.HashSecret("key-a"), Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-all", AccessScope: "all_tenants", StaticPayload: staticPayload, StaticToDynamic: true, MaxRequestsPM: 10, Active: true})
+	h := Server{Repo: repo}.Handler()
+
+	for i, key := range []string{"order-a", "order-b"} {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-a/transactions/qris", strings.NewReader(`{"template_id":"template-all","amount":10000,"idempotency_key":"`+key+`"}`))
+		req.Header.Set("X-API-Key", "key-a")
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("request %d code=%d body=%s", i, w.Code, w.Body.String())
+		}
+		var payment domain.TestPayment
+		if err := json.Unmarshal(w.Body.Bytes(), &payment); err != nil {
+			t.Fatal(err)
+		}
+		var response map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		wantPayable := int64(10001 + i)
+		if payment.Amount != 10000 || payment.PayableAmount != wantPayable || payment.UniqueAmountCode != int64(i+1) {
+			t.Fatalf("request %d payment=%+v", i, payment)
+		}
+		if response["requested_amount"] != float64(10000) || response["payable_amount"] != float64(wantPayable) || response["unique_amount_code"] != float64(i+1) {
+			t.Fatalf("request %d response=%s", i, w.Body.String())
+		}
+	}
+}
+
+func TestTenantQRISWithoutUniqueAmountRejectsOverlappingNominal(t *testing.T) {
+	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
+	repo := store.NewMemory()
+	ctx := context.Background()
+	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", MerchantID: "merchant-a", APIKeyHash: security.HashSecret("key-a"), Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-all", AccessScope: "all_tenants", StaticPayload: staticPayload, StaticToDynamic: true, MaxRequestsPM: 10, Active: true})
+	h := Server{Repo: repo}.Handler()
+
+	for i, key := range []string{"order-a", "order-b"} {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-a/transactions/qris", strings.NewReader(`{"template_id":"template-all","amount":10000,"idempotency_key":"`+key+`"}`))
+		req.Header.Set("X-API-Key", "key-a")
+		h.ServeHTTP(w, req)
+		want := http.StatusCreated
+		if i == 1 {
+			want = http.StatusConflict
+		}
+		if w.Code != want {
+			t.Fatalf("request %d code=%d body=%s", i, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestAdminQRISTestCannotReuseTenantReservedPayableAmount(t *testing.T) {
+	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
+	repo := store.NewMemory()
+	ctx := context.Background()
+	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", MerchantID: "merchant-a", UseUniqueAmountCode: true, APIKeyHash: security.HashSecret("key-a"), Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-all", AccessScope: "all_tenants", StaticPayload: staticPayload, StaticToDynamic: true, MaxRequestsPM: 10, Active: true})
+	h := Server{Repo: repo, AdminTokens: map[string]string{"admin": "operator"}}.Handler()
+
+	tenantRequest := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-a/transactions/qris", strings.NewReader(`{"template_id":"template-all","amount":10000,"idempotency_key":"order-a"}`))
+	req.Header.Set("X-API-Key", "key-a")
+	h.ServeHTTP(tenantRequest, req)
+	if tenantRequest.Code != http.StatusCreated {
+		t.Fatalf("tenant code=%d body=%s", tenantRequest.Code, tenantRequest.Body.String())
+	}
+
+	adminRequest := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/admin/qris-test-payments", strings.NewReader(`{"qris_template_id":"template-all","amount":10001}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	h.ServeHTTP(adminRequest, req)
+	if adminRequest.Code != http.StatusConflict {
+		t.Fatalf("admin code=%d body=%s", adminRequest.Code, adminRequest.Body.String())
+	}
+}
+
 func TestTenantQRISTransactionIdempotencyRejectsDifferentExpiry(t *testing.T) {
 	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
 	repo := store.NewMemory()
@@ -956,9 +1049,10 @@ func TestTenantQRISTransactionRateLimitCountsDistinctIdempotencyKeys(t *testing.
 	h := Server{Repo: repo}.Handler()
 
 	statuses := []int{}
-	for _, key := range []string{"order-a", "order-b"} {
+	for i, key := range []string{"order-a", "order-b"} {
 		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-a/transactions/qris", strings.NewReader(`{"template_id":"template-all","amount":1013,"idempotency_key":"`+key+`"}`))
+		body := fmt.Sprintf(`{"template_id":"template-all","amount":%d,"idempotency_key":"%s"}`, 1013+i, key)
+		req := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-a/transactions/qris", strings.NewReader(body))
 		req.Header.Set("X-API-Key", "key-a")
 		h.ServeHTTP(w, req)
 		statuses = append(statuses, w.Code)

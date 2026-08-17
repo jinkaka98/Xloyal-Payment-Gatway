@@ -251,7 +251,7 @@ func (w Worker) checkTestPaymentsForMerchants(ctx context.Context, now time.Time
 				ledgers[payment.MerchantID] = transactions
 			}
 			for _, transaction := range transactions {
-				if transaction.Status != "paid" || transaction.Amount != payment.Amount || transaction.InvoiceID != "" {
+				if transaction.Status != "paid" || transaction.Amount != payableAmount(payment) || transaction.InvoiceID != "" {
 					continue
 				}
 				if _, claimed := claimedTransactionIDs[transaction.ID]; claimed {
@@ -337,7 +337,7 @@ func uniquelyMatchesPaymentByAmountTime(transaction domain.PortalTransaction, ta
 	matchedID := ""
 	count := 0
 	for _, payment := range payments {
-		if payment.Status != domain.InvoicePending || payment.MerchantID != transaction.MerchantID || payment.Amount != transaction.Amount {
+		if payment.Status != domain.InvoicePending || payment.MerchantID != transaction.MerchantID || payableAmount(payment) != transaction.Amount {
 			continue
 		}
 		if transaction.PaidAt.Before(payment.CreatedAt) || transaction.PaidAt.After(payment.ExpiresAt) || !withinMatchWindow(transaction.PaidAt, payment.CreatedAt, TestPaymentMatchWindow) {
@@ -350,6 +350,13 @@ func uniquelyMatchesPaymentByAmountTime(transaction domain.PortalTransaction, ta
 		count++
 	}
 	return count == 1 && matchedID == target.ID
+}
+
+func payableAmount(payment domain.TestPayment) int64 {
+	if payment.PayableAmount > 0 {
+		return payment.PayableAmount
+	}
+	return payment.Amount
 }
 
 func (w Worker) validateTestPayments(ctx context.Context) error {

@@ -42,6 +42,7 @@ interface ApiTenant {
   callback_url?: string;
   webhook_url?: string;
   sandbox_mode: boolean;
+  use_unique_amount_code?: boolean;
   active: boolean;
   api_key_recoverable?: boolean;
   created_at: string;
@@ -56,6 +57,8 @@ interface ApiTenantTransaction {
   request_source: string;
   idempotency_key?: string;
   amount: number;
+  payable_amount?: number;
+  unique_amount_code?: number;
   currency: "IDR";
   status: TenantTransaction["status"];
   provider_reference?: string;
@@ -135,7 +138,7 @@ export const api = {
 	async getMerchantTransactions(merchantID = ""): Promise<PortalTransaction[]> { return request<PortalTransaction[]>(`/admin/merchant-transactions?merchant_id=${encodeURIComponent(merchantID)}`, []); },
 	async getTenantTransactions(): Promise<TenantTransaction[]> {
 		const items = await request<ApiTenantTransaction[]>("/admin/tenant-transactions?limit=500", []);
-		return items.map((item) => ({ id: item.id, tenantId: item.tenant_id, merchantId: item.merchant_id ?? "", kind: item.kind, mode: item.mode, requestSource: item.request_source, idempotencyKey: item.idempotency_key ?? "", amount: item.amount, currency: item.currency, status: item.status, providerReference: item.provider_reference ?? "", validation: item.validation ?? "", matchedTransactionId: item.matched_transaction_id ?? "", createdAt: item.created_at, updatedAt: item.updated_at, expiresAt: item.expires_at, lastCheckedAt: item.last_checked_at, checkCount: item.check_count ?? 0 }));
+		return items.map((item) => ({ id: item.id, tenantId: item.tenant_id, merchantId: item.merchant_id ?? "", kind: item.kind, mode: item.mode, requestSource: item.request_source, idempotencyKey: item.idempotency_key ?? "", amount: item.amount, payableAmount: item.payable_amount ?? item.amount, uniqueAmountCode: item.unique_amount_code ?? 0, currency: item.currency, status: item.status, providerReference: item.provider_reference ?? "", validation: item.validation ?? "", matchedTransactionId: item.matched_transaction_id ?? "", createdAt: item.created_at, updatedAt: item.updated_at, expiresAt: item.expires_at, lastCheckedAt: item.last_checked_at, checkCount: item.check_count ?? 0 }));
 	},
 	async getGlobalTransactions(limit = 500): Promise<GlobalTransactionLog[]> { return request<GlobalTransactionLog[]>(`/admin/global-transactions?limit=${limit}`, []); },
 	async getTariff(id: string): Promise<Tariff> { return request<Tariff>(`/admin/merchant-ids/${encodeURIComponent(id)}/tariff`, { merchant_id: id, basis_points: 0, fixed_fee: 0, active: true }); },
@@ -171,7 +174,7 @@ export const api = {
   async getTenants(): Promise<Tenant[]> {
     if (USE_MOCK) return [];
     const items = await request<ApiTenant[]>("/admin/tenants", []);
-    return items.map((item) => ({ id: item.id, name: item.name, merchantId: item.merchant_id ?? "", siteUrl: item.site_url ?? "", callbackUrl: item.callback_url ?? "", webhookUrl: item.webhook_url ?? "", sandboxMode: item.sandbox_mode, active: item.active, apiKeyRecoverable: item.api_key_recoverable, createdAt: item.created_at }));
+    return items.map((item) => ({ id: item.id, name: item.name, merchantId: item.merchant_id ?? "", siteUrl: item.site_url ?? "", callbackUrl: item.callback_url ?? "", webhookUrl: item.webhook_url ?? "", sandboxMode: item.sandbox_mode, useUniqueAmountCode: item.use_unique_amount_code ?? false, active: item.active, apiKeyRecoverable: item.api_key_recoverable, createdAt: item.created_at }));
   },
   async getMerchantAccounts(): Promise<MerchantAccount[]> {
     if (USE_MOCK) return [];

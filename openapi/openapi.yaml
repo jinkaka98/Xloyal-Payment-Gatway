@@ -311,7 +311,7 @@
       },
       "CreateTenant": {
         "type": "object", "additionalProperties": false, "required": ["name", "merchant_id"],
-        "properties": {"name": {"type": "string"}, "merchant_id": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}, "sandbox_mode": {"type": "boolean", "default": false, "description": "Allows authenticated browser requests from any valid Origin. Does not bypass API-key authentication."}}
+        "properties": {"name": {"type": "string"}, "merchant_id": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}, "sandbox_mode": {"type": "boolean", "default": false, "description": "Allows authenticated browser requests from any valid Origin. Does not bypass API-key authentication."}, "use_unique_amount_code": {"type": "boolean", "default": false, "description": "Adds an available suffix from 1 through 99 to the QR payable amount so concurrent orders with the same requested amount can be matched safely."}}
       },
       "CreateMerchantAccount": {
         "type": "object", "additionalProperties": false, "required": ["id", "tenant_id", "provider", "name", "credential"],
@@ -328,12 +328,12 @@
         }
       },
       "Tenant": {
-        "type": "object", "required": ["id", "name", "sandbox_mode", "api_key_recoverable", "active", "created_at"],
-        "properties": {"id": {"type": "string"}, "merchant_id": {"type": "string"}, "name": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}, "sandbox_mode": {"type": "boolean", "description": "When true, authenticated browser calls may use any valid Origin."}, "api_key_recoverable": {"type": "boolean", "description": "False for legacy credentials that must be rotated before reveal."}, "active": {"type": "boolean"}, "created_at": {"type": "string", "format": "date-time"}}
+        "type": "object", "required": ["id", "name", "sandbox_mode", "use_unique_amount_code", "api_key_recoverable", "active", "created_at"],
+        "properties": {"id": {"type": "string"}, "merchant_id": {"type": "string"}, "name": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}, "sandbox_mode": {"type": "boolean", "description": "When true, authenticated browser calls may use any valid Origin."}, "use_unique_amount_code": {"type": "boolean", "description": "When true, QR payable amounts reserve a suffix from 1 through 99."}, "api_key_recoverable": {"type": "boolean", "description": "False for legacy credentials that must be rotated before reveal."}, "active": {"type": "boolean"}, "created_at": {"type": "string", "format": "date-time"}}
       },
       "UpdateTenant": {
         "type": "object", "additionalProperties": false, "required": ["name", "merchant_id", "site_url", "callback_url", "webhook_url", "sandbox_mode", "active"],
-        "properties": {"name": {"type": "string"}, "merchant_id": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}, "sandbox_mode": {"type": "boolean", "description": "Allows authenticated browser requests from any valid Origin."}, "active": {"type": "boolean"}}
+        "properties": {"name": {"type": "string"}, "merchant_id": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}, "sandbox_mode": {"type": "boolean", "description": "Allows authenticated browser requests from any valid Origin."}, "use_unique_amount_code": {"type": "boolean", "description": "Adds a reserved 1 through 99 suffix to tenant QRIS payable amounts."}, "active": {"type": "boolean"}}
       },
       "TenantCredential": {
         "type": "object", "required": ["tenant", "api_key", "api_key_visible_once"],
@@ -393,15 +393,15 @@
       "CreateTenantQRIS": {
         "type": "object", "additionalProperties": false, "required": ["template_id", "amount"],
         "properties": {
-          "template_id": {"type": "string", "description": "Exact id returned by GET /v1/tenants/{tenant_id}/qris/templates."}, "amount": {"type": "integer", "format": "int64", "minimum": 1, "maximum": 100000000},
+          "template_id": {"type": "string", "description": "Exact id returned by GET /v1/tenants/{tenant_id}/qris/templates."}, "amount": {"type": "integer", "format": "int64", "minimum": 1, "maximum": 100000000, "description": "Requested amount. When use_unique_amount_code is enabled for the tenant, the maximum is 99999901 so every suffix from 1 through 99 remains available."},
           "idempotency_key": {"type": "string", "maxLength": 200}, "expires_in_seconds": {"type": "integer", "minimum": 60, "maximum": 1800, "default": 1800}
         }
       },
       "TenantQRISTransaction": {
-        "type": "object", "required": ["id", "idempotency_key", "qris_template_id", "merchant_id", "tenant_id", "amount", "dynamic_payload", "unique_code", "status", "request_source", "match_confidence", "sandbox_mode", "created_at", "updated_at", "expires_at", "check_count", "qr_payload", "qr_png_base64", "status_url", "qr_url"],
+        "type": "object", "required": ["id", "idempotency_key", "qris_template_id", "merchant_id", "tenant_id", "amount", "requested_amount", "payable_amount", "unique_amount_code", "dynamic_payload", "unique_code", "status", "request_source", "match_confidence", "sandbox_mode", "created_at", "updated_at", "expires_at", "check_count", "qr_payload", "qr_png_base64", "status_url", "qr_url"],
         "properties": {
           "id": {"type": "string"}, "idempotency_key": {"type": "string"}, "qris_template_id": {"type": "string"}, "merchant_id": {"type": "string"}, "tenant_id": {"type": "string"},
-          "amount": {"type": "integer", "format": "int64"}, "dynamic_payload": {"type": "string"}, "unique_code": {"type": "string"},
+          "amount": {"type": "integer", "format": "int64", "description": "Original amount requested by the tenant; retained for compatibility."}, "requested_amount": {"type": "integer", "format": "int64"}, "payable_amount": {"type": "integer", "format": "int64", "description": "Exact amount encoded in the QR and used for matching."}, "unique_amount_code": {"type": "integer", "minimum": 0, "maximum": 99}, "dynamic_payload": {"type": "string"}, "unique_code": {"type": "string"},
           "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]}, "request_source": {"const": "tenant_api"}, "match_confidence": {"type": "string"}, "sandbox_mode": {"type": "boolean", "description": "Snapshot of the tenant mode when this QRIS transaction was created."},
           "matched_transaction_id": {"type": "string"}, "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
           "last_checked_at": {"type": ["string", "null"], "format": "date-time"}, "next_check_at": {"type": ["string", "null"], "format": "date-time"}, "check_count": {"type": "integer", "minimum": 0},
@@ -409,9 +409,9 @@
         }
       },
       "TenantQRISTransactionLog": {
-        "type": "object", "required": ["id", "tenant_id", "merchant_id", "reference", "amount", "status", "source", "request_source", "match_confidence", "created_at", "expires_at", "check_count"],
+        "type": "object", "required": ["id", "tenant_id", "merchant_id", "reference", "amount", "requested_amount", "payable_amount", "unique_amount_code", "status", "source", "request_source", "match_confidence", "created_at", "expires_at", "check_count"],
         "properties": {
-          "id": {"type": "string"}, "tenant_id": {"type": "string"}, "merchant_id": {"type": "string"}, "reference": {"type": "string"}, "amount": {"type": "integer", "format": "int64"},
+          "id": {"type": "string"}, "tenant_id": {"type": "string"}, "merchant_id": {"type": "string"}, "reference": {"type": "string"}, "amount": {"type": "integer", "format": "int64"}, "requested_amount": {"type": "integer", "format": "int64"}, "payable_amount": {"type": "integer", "format": "int64"}, "unique_amount_code": {"type": "integer", "minimum": 0, "maximum": 99},
           "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]}, "source": {"const": "tenant_qris"}, "request_source": {"const": "tenant_api"}, "match_confidence": {"type": "string"},
           "created_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"}, "last_checked_at": {"type": ["string", "null"], "format": "date-time"},
           "next_check_at": {"type": ["string", "null"], "format": "date-time"}, "check_count": {"type": "integer", "minimum": 0}, "matched_transaction_id": {"type": "string"}
@@ -425,9 +425,9 @@
         }
       },
       "TestPayment": {
-        "type": "object", "required": ["id", "qris_template_id", "merchant_id", "amount", "dynamic_payload", "status", "request_source", "match_confidence", "sandbox_mode", "created_at", "updated_at", "expires_at", "check_count"],
+        "type": "object", "required": ["id", "qris_template_id", "merchant_id", "amount", "payable_amount", "unique_amount_code", "dynamic_payload", "status", "request_source", "match_confidence", "sandbox_mode", "created_at", "updated_at", "expires_at", "check_count"],
         "properties": {
-          "id": {"type": "string"}, "idempotency_key": {"type": "string"}, "qris_template_id": {"type": "string"}, "merchant_id": {"type": "string"}, "tenant_id": {"type": "string"}, "amount": {"type": "integer", "format": "int64"},
+          "id": {"type": "string"}, "idempotency_key": {"type": "string"}, "qris_template_id": {"type": "string"}, "merchant_id": {"type": "string"}, "tenant_id": {"type": "string"}, "amount": {"type": "integer", "format": "int64"}, "payable_amount": {"type": "integer", "format": "int64"}, "unique_amount_code": {"type": "integer", "minimum": 0, "maximum": 99},
           "dynamic_payload": {"type": "string"}, "unique_code": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]},
           "request_source": {"type": "string"}, "match_confidence": {"type": "string"}, "matched_transaction_id": {"type": "string"}, "sandbox_mode": {"type": "boolean"},
           "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
