@@ -1,4 +1,5 @@
 export type InvoiceStatus = "creating" | "pending" | "paid" | "expired" | "failed";
+export type QRISTransactionStatus = "pending" | "paid" | "expired" | "failed" | "cancelled";
 export type ProviderStatus = "operational" | "degraded" | "offline";
 export type HealthKind = "frontend" | "admin_proxy" | "backend_api" | "database" | "browser_session" | "provider_api";
 
@@ -85,7 +86,7 @@ export interface TenantTransaction {
   payableAmount: number;
   uniqueAmountCode: number;
   currency: "IDR";
-  status: InvoiceStatus;
+  status: InvoiceStatus | "cancelled";
   providerReference: string;
   validation: string;
   matchedTransactionId: string;
@@ -94,6 +95,16 @@ export interface TenantTransaction {
   expiresAt: string;
   lastCheckedAt: string | undefined;
   checkCount: number;
+}
+
+export interface TenantQRISTransaction {
+  id: string;
+  status: QRISTransactionStatus;
+  requested_amount: number;
+  payable_amount: number;
+  unique_amount_code: number;
+  poll_after_seconds?: number;
+  [key: string]: unknown;
 }
 
 export interface AuditEvent {
@@ -157,7 +168,7 @@ export interface TestPayment {
   tenant_id?: string;
   amount: number;
   dynamic_payload: string;
-  status: InvoiceStatus;
+  status: QRISTransactionStatus;
   request_source: string;
   match_confidence: string;
   matched_transaction_id?: string;
@@ -183,7 +194,7 @@ export interface GlobalTransactionLog {
   tenant_id?: string;
   reference: string;
   amount: number;
-  status: InvoiceStatus;
+  status: InvoiceStatus | "cancelled";
   event_at: string;
   source: string;
   request_source: string;

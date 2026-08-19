@@ -22,24 +22,30 @@ func New(db *sql.DB) *Repository                       { return &Repository{DB: 
 func (r *Repository) Health(ctx context.Context) error { return r.DB.PingContext(ctx) }
 func (r *Repository) TenantByAPIKey(ctx context.Context, h string) (domain.Tenant, error) {
 	var v domain.Tenant
-	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),sandbox_mode,use_unique_amount_code,unique_amount_cooldown_minutes,api_key_hash,COALESCE(api_key_ciphertext,''),active,created_at FROM tenants WHERE api_key_hash=$1 AND active=true AND deleted_at IS NULL`, h).Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.SandboxMode, &v.UseUniqueAmountCode, &v.UniqueAmountCooldownMinutes, &v.APIKeyHash, &v.APIKeyCiphertext, &v.Active, &v.CreatedAt)
+	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),sandbox_mode,use_unique_amount_code,unique_amount_cooldown_minutes,api_key_hash,COALESCE(api_key_ciphertext,''),COALESCE(webhook_secret_ciphertext,''),webhook_replay_window_seconds,active,created_at FROM tenants WHERE api_key_hash=$1 AND active=true AND deleted_at IS NULL`, h).Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.SandboxMode, &v.UseUniqueAmountCode, &v.UniqueAmountCooldownMinutes, &v.APIKeyHash, &v.APIKeyCiphertext, &v.WebhookSecretCiphertext, &v.WebhookReplayWindowSeconds, &v.Active, &v.CreatedAt)
 	v.APIKeyRecoverable = v.APIKeyCiphertext != ""
 	return v, notFound(err)
 }
 func (r *Repository) Tenant(ctx context.Context, id string) (domain.Tenant, error) {
 	var v domain.Tenant
-	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),sandbox_mode,use_unique_amount_code,unique_amount_cooldown_minutes,api_key_hash,COALESCE(api_key_ciphertext,''),active,created_at FROM tenants WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.SandboxMode, &v.UseUniqueAmountCode, &v.UniqueAmountCooldownMinutes, &v.APIKeyHash, &v.APIKeyCiphertext, &v.Active, &v.CreatedAt)
+	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),sandbox_mode,use_unique_amount_code,unique_amount_cooldown_minutes,api_key_hash,COALESCE(api_key_ciphertext,''),COALESCE(webhook_secret_ciphertext,''),webhook_replay_window_seconds,active,created_at FROM tenants WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.SandboxMode, &v.UseUniqueAmountCode, &v.UniqueAmountCooldownMinutes, &v.APIKeyHash, &v.APIKeyCiphertext, &v.WebhookSecretCiphertext, &v.WebhookReplayWindowSeconds, &v.Active, &v.CreatedAt)
 	v.APIKeyRecoverable = v.APIKeyCiphertext != ""
 	return v, notFound(err)
 }
 func (r *Repository) CreateTenant(ctx context.Context, v domain.Tenant) error {
 	v.UniqueAmountCooldownMinutes = normalizedCooldownMinutes(v.UniqueAmountCooldownMinutes)
-	_, err := r.DB.ExecContext(ctx, `INSERT INTO tenants(id,merchant_id,name,site_url,callback_url,webhook_url,sandbox_mode,use_unique_amount_code,unique_amount_cooldown_minutes,api_key_hash,api_key_ciphertext,active,created_at) VALUES($1,NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,$8,$9,$10,NULLIF($11,''),$12,$13)`, v.ID, v.MerchantID, v.Name, v.SiteURL, v.CallbackURL, v.WebhookURL, v.SandboxMode, v.UseUniqueAmountCode, v.UniqueAmountCooldownMinutes, v.APIKeyHash, v.APIKeyCiphertext, v.Active, v.CreatedAt)
+	if v.WebhookReplayWindowSeconds == 0 {
+		v.WebhookReplayWindowSeconds = 300
+	}
+	_, err := r.DB.ExecContext(ctx, `INSERT INTO tenants(id,merchant_id,name,site_url,callback_url,webhook_url,sandbox_mode,use_unique_amount_code,unique_amount_cooldown_minutes,api_key_hash,api_key_ciphertext,webhook_secret_ciphertext,webhook_replay_window_seconds,active,created_at) VALUES($1,NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,$8,$9,$10,NULLIF($11,''),NULLIF($12,''),$13,$14,$15)`, v.ID, v.MerchantID, v.Name, v.SiteURL, v.CallbackURL, v.WebhookURL, v.SandboxMode, v.UseUniqueAmountCode, v.UniqueAmountCooldownMinutes, v.APIKeyHash, v.APIKeyCiphertext, v.WebhookSecretCiphertext, v.WebhookReplayWindowSeconds, v.Active, v.CreatedAt)
 	return err
 }
 func (r *Repository) UpdateTenant(ctx context.Context, v domain.Tenant) error {
 	v.UniqueAmountCooldownMinutes = normalizedCooldownMinutes(v.UniqueAmountCooldownMinutes)
-	res, err := r.DB.ExecContext(ctx, `UPDATE tenants SET merchant_id=NULLIF($1,''),name=$2,site_url=NULLIF($3,''),callback_url=NULLIF($4,''),webhook_url=NULLIF($5,''),sandbox_mode=$6,use_unique_amount_code=$7,unique_amount_cooldown_minutes=$8,active=$9 WHERE id=$10`, v.MerchantID, v.Name, v.SiteURL, v.CallbackURL, v.WebhookURL, v.SandboxMode, v.UseUniqueAmountCode, v.UniqueAmountCooldownMinutes, v.Active, v.ID)
+	if v.WebhookReplayWindowSeconds == 0 {
+		v.WebhookReplayWindowSeconds = 300
+	}
+	res, err := r.DB.ExecContext(ctx, `UPDATE tenants SET merchant_id=NULLIF($1,''),name=$2,site_url=NULLIF($3,''),callback_url=NULLIF($4,''),webhook_url=NULLIF($5,''),sandbox_mode=$6,use_unique_amount_code=$7,unique_amount_cooldown_minutes=$8,active=$9,webhook_replay_window_seconds=$10 WHERE id=$11`, v.MerchantID, v.Name, v.SiteURL, v.CallbackURL, v.WebhookURL, v.SandboxMode, v.UseUniqueAmountCode, v.UniqueAmountCooldownMinutes, v.Active, v.WebhookReplayWindowSeconds, v.ID)
 	if err != nil {
 		return err
 	}
@@ -55,7 +61,7 @@ func (r *Repository) DeleteTenant(ctx context.Context, id string, audit domain.A
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `UPDATE tenants SET active=false,api_key_hash=$1,api_key_ciphertext=NULL,deleted_at=$2 WHERE id=$3 AND deleted_at IS NULL`, "deleted:"+audit.ID, audit.CreatedAt, id)
+	res, err := tx.ExecContext(ctx, `UPDATE tenants SET active=false,api_key_hash=$1,api_key_ciphertext=NULL,webhook_secret_ciphertext=NULL,deleted_at=$2 WHERE id=$3 AND deleted_at IS NULL`, "deleted:"+audit.ID, audit.CreatedAt, id)
 	if err != nil {
 		return err
 	}
@@ -109,7 +115,7 @@ func (r *Repository) RotateTenantAPIKey(ctx context.Context, tenantID, expectedH
 	return tx.Commit()
 }
 func (r *Repository) ListTenants(ctx context.Context) ([]domain.Tenant, error) {
-	rows, err := r.DB.QueryContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),sandbox_mode,use_unique_amount_code,unique_amount_cooldown_minutes,api_key_hash,COALESCE(api_key_ciphertext,''),active,created_at FROM tenants WHERE deleted_at IS NULL ORDER BY created_at DESC`)
+	rows, err := r.DB.QueryContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),sandbox_mode,use_unique_amount_code,unique_amount_cooldown_minutes,api_key_hash,COALESCE(api_key_ciphertext,''),COALESCE(webhook_secret_ciphertext,''),webhook_replay_window_seconds,active,created_at FROM tenants WHERE deleted_at IS NULL ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +123,7 @@ func (r *Repository) ListTenants(ctx context.Context) ([]domain.Tenant, error) {
 	out := make([]domain.Tenant, 0)
 	for rows.Next() {
 		var v domain.Tenant
-		if err := rows.Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.SandboxMode, &v.UseUniqueAmountCode, &v.UniqueAmountCooldownMinutes, &v.APIKeyHash, &v.APIKeyCiphertext, &v.Active, &v.CreatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.SandboxMode, &v.UseUniqueAmountCode, &v.UniqueAmountCooldownMinutes, &v.APIKeyHash, &v.APIKeyCiphertext, &v.WebhookSecretCiphertext, &v.WebhookReplayWindowSeconds, &v.Active, &v.CreatedAt); err != nil {
 			return nil, err
 		}
 		v.APIKeyRecoverable = v.APIKeyCiphertext != ""
@@ -559,7 +565,7 @@ func startUniqueAmountCooldown(ctx context.Context, tx *sql.Tx, payment domain.T
 	if err != nil {
 		return err
 	}
-	if reservation.Code == 0 || (payment.Status != domain.InvoicePaid && payment.Status != domain.InvoiceExpired) {
+	if (reservation.Code == 0 && payment.Status != domain.InvoiceCancelled) || (payment.Status != domain.InvoicePaid && payment.Status != domain.InvoiceExpired && payment.Status != domain.InvoiceCancelled) {
 		_, err = tx.ExecContext(ctx, `DELETE FROM qris_unique_amount_reservations WHERE payment_id=$1`, payment.ID)
 		return err
 	}
@@ -699,6 +705,65 @@ func (r *Repository) TestPayment(ctx context.Context, id string) (domain.TestPay
 func (r *Repository) TestPaymentForTenant(ctx context.Context, tenantID, id string) (domain.TestPayment, error) {
 	v, err := scanTestPayment(r.DB.QueryRowContext(ctx, testPaymentColumns+` WHERE tenant_id=$1 AND id=$2 AND request_source='tenant_api'`, tenantID, id))
 	return v, notFound(err)
+}
+func (r *Repository) CancelPendingTestPayment(ctx context.Context, tenantID, id string, now time.Time, audit domain.AuditEvent) (domain.TestPayment, bool, error) {
+	tx, err := r.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.TestPayment{}, false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE test_payments SET status='cancelled',match_confidence='cancelled_by_tenant',updated_at=$1,next_check_at=NULL WHERE id=$2 AND tenant_id=$3 AND request_source='tenant_api' AND status='pending' AND expires_at>$1`, now, id, tenantID)
+	if err != nil {
+		return domain.TestPayment{}, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return domain.TestPayment{}, false, err
+	}
+	expired := false
+	if n == 0 {
+		expireRes, expireErr := tx.ExecContext(ctx, `UPDATE test_payments SET status='expired',match_confidence='expired_no_match',updated_at=$1,next_check_at=NULL WHERE id=$2 AND tenant_id=$3 AND request_source='tenant_api' AND status='pending' AND expires_at<=$1`, now, id, tenantID)
+		if expireErr != nil {
+			return domain.TestPayment{}, false, expireErr
+		}
+		expiredRows, rowsErr := expireRes.RowsAffected()
+		if rowsErr != nil {
+			return domain.TestPayment{}, false, rowsErr
+		}
+		expired = expiredRows == 1
+	}
+	v, err := scanTestPayment(tx.QueryRowContext(ctx, testPaymentColumns+` WHERE tenant_id=$1 AND id=$2 AND request_source='tenant_api'`, tenantID, id))
+	if err != nil {
+		return domain.TestPayment{}, false, notFound(err)
+	}
+	if n == 0 {
+		if expired {
+			if err = startUniqueAmountCooldown(ctx, tx, v); err != nil {
+				return domain.TestPayment{}, false, err
+			}
+		}
+		if err = tx.Commit(); err != nil {
+			return domain.TestPayment{}, false, err
+		}
+		if v.Status == domain.InvoiceCancelled {
+			return v, false, nil
+		}
+		return v, false, store.ErrConflict
+	}
+	if err = startUniqueAmountCooldown(ctx, tx, v); err != nil {
+		return domain.TestPayment{}, false, err
+	}
+	metadata, err := json.Marshal(audit.Metadata)
+	if err != nil {
+		return domain.TestPayment{}, false, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(id,tenant_id,actor,action,resource_type,resource_id,metadata,created_at) VALUES($1,NULLIF($2,''),$3,$4,$5,$6,$7,$8)`, audit.ID, audit.TenantID, audit.Actor, audit.Action, audit.ResourceType, audit.ResourceID, metadata, audit.CreatedAt); err != nil {
+		return domain.TestPayment{}, false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return domain.TestPayment{}, false, err
+	}
+	return v, true, nil
 }
 func (r *Repository) UpdatePendingTestPayment(ctx context.Context, v domain.TestPayment) (bool, error) {
 	tx, err := r.DB.BeginTx(ctx, nil)

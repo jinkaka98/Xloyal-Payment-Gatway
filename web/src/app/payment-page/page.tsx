@@ -1,0 +1,15 @@
+"use client";
+import { useEffect, useState } from "react";
+import { AdminPageHeader, Metric, QuickAction, NotImplemented } from "@/components/payment-page-admin";
+
+export default function PaymentPageOverview() {
+  const [themeCount, setThemeCount] = useState("-");
+  useEffect(() => { fetch("/api/admin/payment-themes", { cache: "no-store" }).then((r) => r.ok ? r.json() : []).then((v) => setThemeCount(String(Array.isArray(v) ? v.length : 0))).catch(() => setThemeCount("0")); }, []);
+  return <div className="page payment-overview"><AdminPageHeader title="Payment Page" description="Pantau checkout hosted, tema aktif, dan lifecycle pembayaran dari satu workspace." action={<a className="button button-primary" href="/payment-page/launch">Launch Payment</a>} />
+    <section className="operational-band"><div><p className="eyebrow">ACTIVE THEME</p><h2>{themeCount === "0" ? "System Modern" : `${themeCount} configured theme${themeCount === "1" ? "" : "s"}`}</h2><span className="cell-subtitle">Published version tersedia untuk checkout baru.</span></div><span className="status-pill status-active">Operational</span></section>
+    <section className="metric-grid"><Metric label="Payment Sessions" value="0" /><Metric label="Pending" value="0" tone="metric-pending" /><Metric label="Paid" value="0" tone="metric-paid" /><Metric label="Expired" value="0" tone="metric-expired" /><Metric label="Failed" value="0" tone="metric-failed" /><Metric label="Cancelled" value="0" /></section>
+    <section className="quick-actions"><div className="section-heading"><div><p className="eyebrow">WORKFLOWS</p><h2>Quick actions</h2></div></div><div className="quick-action-grid"><QuickAction href="/payment-page/launch" label="Launch Payment" detail="Buat checkout page dari PaymentSession" /><QuickAction href="/payment-page/testing" label="Testing Mode" detail="Uji lifecycle di sandbox" /><QuickAction href="/custom-web-payment" label="Customize Theme" detail="Atur preset, branding, dan preview" /><QuickAction href="/payment-page/api-docs" label="API Documentation" detail="Integrasikan endpoint resmi" /></div></section>
+    <div className="dashboard-grid"><section className="table-module"><div className="section-heading"><div><h2>Recent Payment Sessions</h2><p>Session terbaru akan muncul setelah checkout dibuat.</p></div></div><div className="empty-state">Belum ada payment session lokal.</div></section><section className="table-module"><div className="section-heading"><div><h2>System status</h2><p>Status dependensi operasional.</p></div></div><div className="status-list"><div><span>Theme Status</span><strong className="text-success">Ready</strong></div><div><span>Webhook Status</span><strong>Configured per tenant</strong></div><div><span>Testing Mode Status</span><strong className="text-warning">Backend simulator belum tersedia</strong></div></div></section></div>
+    <NotImplemented>Metric session historis dan simulator testing memerlukan endpoint admin agregasi/event simulator yang belum tersedia pada backend saat ini.</NotImplemented>
+  </div>;
+}

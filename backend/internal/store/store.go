@@ -60,6 +60,7 @@ type Repository interface {
 	CreateTenantTestPayment(context.Context, domain.TestPayment, time.Time, int) (domain.TestPayment, bool, bool, int, error)
 	TestPayment(context.Context, string) (domain.TestPayment, error)
 	TestPaymentForTenant(context.Context, string, string) (domain.TestPayment, error)
+	CancelPendingTestPayment(context.Context, string, string, time.Time, domain.AuditEvent) (domain.TestPayment, bool, error)
 	UpdatePendingTestPayment(context.Context, domain.TestPayment) (bool, error)
 	MatchPendingTestPayment(context.Context, domain.TestPayment, domain.PortalTransaction) (bool, error)
 	PendingTestPayments(context.Context, time.Time, int) ([]domain.TestPayment, error)
@@ -69,6 +70,38 @@ type Repository interface {
 	ListTenantTestPayments(context.Context, string, int) ([]domain.TestPayment, error)
 	AppendAudit(context.Context, domain.AuditEvent) error
 	ListAudit(context.Context, string, int) ([]domain.AuditEvent, error)
+	CreatePaymentSession(context.Context, domain.PaymentSession, domain.PaymentEvent, domain.OutboxEvent) error
+	PaymentSession(context.Context, string, string) (domain.PaymentSession, error)
+	PaymentSessionByTokenHash(context.Context, string) (domain.PaymentSession, error)
+	TransitionPaymentSession(context.Context, string, string, domain.PaymentSessionStatus, time.Time, domain.PaymentEvent, domain.OutboxEvent) (domain.PaymentSession, error)
+	ClaimOutboxEvents(context.Context, string, time.Time, time.Duration, int) ([]domain.OutboxEvent, error)
+	CompleteOutboxEvent(context.Context, string, string, time.Time) error
+	FailOutboxEvent(context.Context, string, string, time.Time, time.Duration, string) error
+	RedirectURLAllowed(context.Context, string, string, string) (bool, error)
+	PublishedPaymentThemeVersion(context.Context, string, string, int) (domain.PaymentThemeVersion, error)
+	PaymentThemeVersion(context.Context, string, int) (domain.PaymentThemeVersion, error)
+	DefaultPublishedPaymentThemeVersion(context.Context, string) (domain.PaymentThemeVersion, error)
+	ListPaymentThemes(context.Context, string) ([]domain.PaymentTheme, error)
+	PaymentTheme(context.Context, string, string) (domain.PaymentTheme, error)
+	CreatePaymentTheme(context.Context, domain.PaymentTheme) error
+	UpdatePaymentThemeDraft(context.Context, string, string, string, []byte, time.Time) (domain.PaymentTheme, error)
+	PublishPaymentTheme(context.Context, string, string, time.Time) (domain.PaymentTheme, domain.PaymentThemeVersion, error)
+	ArchivePaymentTheme(context.Context, string, string, time.Time) (domain.PaymentTheme, error)
+	SetDefaultPaymentTheme(context.Context, string, string, time.Time) (domain.PaymentTheme, error)
+	DuplicatePaymentTheme(context.Context, string, string, domain.PaymentTheme) error
+	DeletePaymentTheme(context.Context, string, string) error
+	TouchPaymentSession(context.Context, string, string, time.Time) error
+	CreatePaymentEvent(context.Context, domain.PaymentEvent) error
+	PaymentEvents(context.Context, string, string) ([]domain.PaymentEvent, error)
+	CreateOutboxEvent(context.Context, domain.OutboxEvent) error
+	MarkOutboxDelivered(context.Context, string, string, time.Time) error
+	MarkOutboxRetry(context.Context, string, string, time.Time, time.Duration, string) error
+	MarkOutboxFailed(context.Context, string, string, time.Time, string) error
+	CreateWebhookDelivery(context.Context, domain.WebhookDelivery) error
+	ClaimWebhookDeliveries(context.Context, string, time.Time, time.Duration, int) ([]domain.WebhookDelivery, error)
+	MarkWebhookDelivered(context.Context, string, string, time.Time, int) error
+	MarkWebhookRetry(context.Context, string, string, time.Time, time.Duration, int, string) error
+	MarkWebhookFailed(context.Context, string, string, time.Time, int, string) error
 }
 
 type Memory struct {
@@ -87,6 +120,13 @@ type Memory struct {
 	qrisRateWindows          map[string]qrisRateWindow
 	uniqueAmountReservations map[string]uniqueAmountReservation
 	browserJobs              map[string]domain.BrowserJob
+	paymentSessions          map[string]domain.PaymentSession
+	paymentEvents            []domain.PaymentEvent
+	outboxEvents             map[string]domain.OutboxEvent
+	webhookDeliveries        map[string]domain.WebhookDelivery
+	redirectURLs             map[string]domain.AllowedRedirectURL
+	themes                   map[string]domain.PaymentTheme
+	themeVersions            map[string]domain.PaymentThemeVersion
 }
 
 type qrisRateWindow struct {
@@ -113,7 +153,7 @@ func NewMemory() *Memory {
 		tenants: map[string]domain.Tenant{}, merchants: map[string]domain.MerchantAccount{},
 		merchantIDs: map[string]domain.MerchantID{}, connections: map[string]domain.MerchantConnection{}, portalTransactions: map[string]domain.PortalTransaction{}, tariffs: map[string]domain.Tariff{},
 		invoices: map[string]domain.Invoice{}, idem: map[string]string{},
-		templates: map[string]domain.QRISTemplate{}, payments: map[string]domain.TestPayment{}, qrisRateWindows: map[string]qrisRateWindow{}, uniqueAmountReservations: map[string]uniqueAmountReservation{}, browserJobs: map[string]domain.BrowserJob{},
+		templates: map[string]domain.QRISTemplate{}, payments: map[string]domain.TestPayment{}, qrisRateWindows: map[string]qrisRateWindow{}, uniqueAmountReservations: map[string]uniqueAmountReservation{}, browserJobs: map[string]domain.BrowserJob{}, paymentSessions: map[string]domain.PaymentSession{}, outboxEvents: map[string]domain.OutboxEvent{}, webhookDeliveries: map[string]domain.WebhookDelivery{}, redirectURLs: map[string]domain.AllowedRedirectURL{}, themes: map[string]domain.PaymentTheme{}, themeVersions: map[string]domain.PaymentThemeVersion{},
 	}
 }
 func (m *Memory) AssignTenantMerchant(_ context.Context, tenantID, merchantID string) error {
@@ -405,6 +445,9 @@ func (m *Memory) CreateTenant(_ context.Context, v domain.Tenant) error {
 	if v.UniqueAmountCooldownMinutes == 0 {
 		v.UniqueAmountCooldownMinutes = 30
 	}
+	if v.WebhookReplayWindowSeconds == 0 {
+		v.WebhookReplayWindowSeconds = 300
+	}
 	m.tenants[v.ID] = v
 	return nil
 }
@@ -417,9 +460,13 @@ func (m *Memory) UpdateTenant(_ context.Context, v domain.Tenant) error {
 	}
 	v.APIKeyHash = current.APIKeyHash
 	v.APIKeyCiphertext = current.APIKeyCiphertext
+	v.WebhookSecretCiphertext = current.WebhookSecretCiphertext
 	v.APIKeyRecoverable = current.APIKeyCiphertext != ""
 	if v.UniqueAmountCooldownMinutes == 0 {
 		v.UniqueAmountCooldownMinutes = current.UniqueAmountCooldownMinutes
+	}
+	if v.WebhookReplayWindowSeconds == 0 {
+		v.WebhookReplayWindowSeconds = current.WebhookReplayWindowSeconds
 	}
 	m.tenants[v.ID] = v
 	return nil
@@ -722,7 +769,7 @@ func (m *Memory) startUniqueAmountCooldownLocked(v domain.TestPayment) {
 	if !exists || reservation.PaymentID != v.ID {
 		return
 	}
-	if reservation.Code == 0 || (v.Status != domain.InvoicePaid && v.Status != domain.InvoiceExpired) {
+	if (reservation.Code == 0 && v.Status != domain.InvoiceCancelled) || (v.Status != domain.InvoicePaid && v.Status != domain.InvoiceExpired && v.Status != domain.InvoiceCancelled) {
 		delete(m.uniqueAmountReservations, key)
 		return
 	}
@@ -764,6 +811,38 @@ func (m *Memory) TestPaymentForTenant(_ context.Context, tenantID, id string) (d
 		return domain.TestPayment{}, ErrNotFound
 	}
 	return v, nil
+}
+func (m *Memory) CancelPendingTestPayment(_ context.Context, tenantID, id string, now time.Time, audit domain.AuditEvent) (domain.TestPayment, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.payments[id]
+	if !ok || v.TenantID != tenantID || v.RequestSource != "tenant_api" {
+		return domain.TestPayment{}, false, ErrNotFound
+	}
+	switch v.Status {
+	case domain.InvoiceCancelled:
+		return v, false, nil
+	case domain.InvoicePending:
+		if !v.ExpiresAt.After(now) {
+			v.Status = domain.InvoiceExpired
+			v.MatchConfidence = "expired_no_match"
+			v.UpdatedAt = now
+			v.NextCheckAt = nil
+			m.payments[id] = v
+			m.startUniqueAmountCooldownLocked(v)
+			return v, false, ErrConflict
+		}
+		v.Status = domain.InvoiceCancelled
+		v.MatchConfidence = "cancelled_by_tenant"
+		v.UpdatedAt = now
+		v.NextCheckAt = nil
+		m.payments[id] = v
+		m.startUniqueAmountCooldownLocked(v)
+		m.appendAuditLocked(audit)
+		return v, true, nil
+	default:
+		return v, false, ErrConflict
+	}
 }
 func (m *Memory) UpdatePendingTestPayment(_ context.Context, v domain.TestPayment) (bool, error) {
 	m.mu.Lock()

@@ -476,6 +476,28 @@ func TestQRISTestValidationDoesNotCountFailedBrowserSync(t *testing.T) {
 	}
 }
 
+func TestCancelledTenantQRISIsNotProcessedByPaymentValidation(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemory()
+	now := time.Date(2026, 8, 17, 16, 0, 0, 0, time.UTC)
+	due := now.Add(-time.Second)
+	repo.UpsertMerchantConnection(ctx, domain.MerchantConnection{MerchantID: "merchant-test", Status: domain.ConnectionConnected, UpdatedAt: now})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-test"})
+	repo.CreateTestPayment(ctx, domain.TestPayment{ID: "cancelled-payment", QRISTemplateID: "template-test", MerchantID: "merchant-test", TenantID: "tenant-a", Amount: 1000, Status: domain.InvoiceCancelled, RequestSource: "tenant_api", MatchConfidence: "cancelled_by_tenant", CreatedAt: now.Add(-time.Minute), UpdatedAt: now, ExpiresAt: now.Add(29 * time.Minute), NextCheckAt: &due})
+	syncCalls := 0
+	w := Worker{Repo: repo, Now: func() time.Time { return now }, SyncMerchant: func(context.Context, domain.MerchantConnection) ([]domain.PortalTransaction, error) {
+		syncCalls++
+		return nil, nil
+	}}
+	if err := w.validateTestPayments(ctx); err != nil {
+		t.Fatal(err)
+	}
+	payment, err := repo.TestPayment(ctx, "cancelled-payment")
+	if err != nil || payment.Status != domain.InvoiceCancelled || payment.CheckCount != 0 || syncCalls != 0 {
+		t.Fatalf("payment=%+v sync_calls=%d err=%v", payment, syncCalls, err)
+	}
+}
+
 func TestQRISTestValidationDoesNotCountFailedLedgerPersistence(t *testing.T) {
 	ctx := context.Background()
 	memory := store.NewMemory()

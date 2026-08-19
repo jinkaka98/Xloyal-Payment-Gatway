@@ -39,6 +39,9 @@ type Server struct {
 	WebhookSecret         string
 	WebhookSignalPath     string
 	UniqueAmountCodeOrder func() ([]int64, error)
+	PaymentSessions       gateway.PaymentSessionService
+	PublicPaymentBaseURL  string
+	SSE                   *PaymentSSEHub
 }
 
 func (s Server) Handler() http.Handler {
@@ -46,11 +49,16 @@ func (s Server) Handler() http.Handler {
 	m.HandleFunc("GET /v1/health", s.health)
 	m.HandleFunc("OPTIONS /v1/{rest...}", tenantPreflight)
 	m.HandleFunc("POST /internal/github/webhook", s.githubWebhook)
+	m.HandleFunc("POST /v1/payment-sessions", s.public(s.createPaymentSession))
+	m.HandleFunc("GET /v1/payment-sessions/{token}", s.publicPayment(s.getPaymentSession))
+	m.HandleFunc("GET /v1/payment-sessions/{token}/events", s.publicPayment(s.paymentSessionEvents))
+	m.HandleFunc("POST /v1/payment-sessions/{token}/cancel", s.publicPayment(s.cancelPaymentSession))
 	m.HandleFunc("POST /v1/tenants/{tenant_id}/invoices", s.public(s.createInvoice))
 	m.HandleFunc("POST /v1/tenants/{tenant_id}/transactions/refresh", s.public(s.refreshTenantTransactions))
 	m.HandleFunc("GET /v1/tenants/{tenant_id}/transactions", s.public(s.listTenantTransactions))
 	m.HandleFunc("POST /v1/tenants/{tenant_id}/transactions/qris", s.public(s.createTenantQRISTransaction))
 	m.HandleFunc("GET /v1/tenants/{tenant_id}/transactions/qris/{transaction_id}", s.public(s.getTenantQRISTransaction))
+	m.HandleFunc("POST /v1/tenants/{tenant_id}/transactions/qris/{transaction_id}/cancel", s.public(s.cancelTenantQRISTransaction))
 	m.HandleFunc("GET /v1/tenants/{tenant_id}/transactions/qris/{transaction_id}/qr", s.public(s.getTenantQRISTransactionQR))
 	m.HandleFunc("GET /v1/tenants/{tenant_id}/qris/templates", s.public(s.listTenantQRSTemplates))
 	m.HandleFunc("POST /v1/tenants/{tenant_id}/qris/dynamic", s.public(s.createTenantDynamicQRIS))
@@ -95,6 +103,16 @@ func (s Server) Handler() http.Handler {
 	m.HandleFunc("POST /admin/qris-test-payments", s.admin("operator", s.createTestPayment))
 	m.HandleFunc("GET /admin/qris-test-payments/{id}/qr", s.admin("viewer", s.testPaymentQR))
 	m.HandleFunc("GET /admin/audit-events", s.admin("viewer", s.listAudit))
+	m.HandleFunc("GET /admin/payment-themes", s.admin("viewer", s.listPaymentThemes))
+	m.HandleFunc("POST /admin/payment-themes", s.admin("operator", s.createPaymentTheme))
+	m.HandleFunc("GET /admin/payment-themes/{id}", s.admin("viewer", s.getPaymentTheme))
+	m.HandleFunc("PUT /admin/payment-themes/{id}", s.admin("operator", s.updatePaymentTheme))
+	m.HandleFunc("DELETE /admin/payment-themes/{id}", s.admin("super_admin", s.deletePaymentTheme))
+	m.HandleFunc("POST /admin/payment-themes/{id}/publish", s.admin("operator", s.publishPaymentTheme))
+	m.HandleFunc("POST /admin/payment-themes/{id}/duplicate", s.admin("operator", s.duplicatePaymentTheme))
+	m.HandleFunc("POST /admin/payment-themes/{id}/set-default", s.admin("operator", s.setDefaultPaymentTheme))
+	m.HandleFunc("POST /admin/payment-themes/{id}/archive", s.admin("operator", s.archivePaymentTheme))
+	m.HandleFunc("GET /admin/payment-themes/{id}/preview", s.admin("viewer", s.getPaymentTheme))
 	return securityHeaders(m)
 }
 
@@ -789,6 +807,28 @@ func (s Server) getTenantQRISTransaction(w http.ResponseWriter, r *http.Request,
 	write(w, http.StatusOK, response)
 }
 
+func (s Server) cancelTenantQRISTransaction(w http.ResponseWriter, r *http.Request, tenant domain.Tenant) {
+	now := time.Now().UTC()
+	id := r.PathValue("transaction_id")
+	audit := domain.AuditEvent{ID: newID(), TenantID: tenant.ID, Actor: "tenant_api", Action: "qris.transaction_cancelled", ResourceType: "test_payment", ResourceID: id, CreatedAt: now}
+	payment, _, err := s.Repo.CancelPendingTestPayment(r.Context(), tenant.ID, id, now, audit)
+	if errors.Is(err, store.ErrNotFound) {
+		problem(w, http.StatusNotFound, "not found")
+		return
+	}
+	response := tenantQRISResponse{TestPayment: payment, TemplateID: payment.QRISTemplateID, Currency: "IDR", RequestedAmount: payment.Amount, StatusURL: strings.TrimSuffix(r.URL.Path, "/cancel"), QRURL: strings.TrimSuffix(r.URL.Path, "/cancel") + "/qr"}
+	response.DynamicPayload = ""
+	if errors.Is(err, store.ErrConflict) {
+		write(w, http.StatusConflict, map[string]any{"error": "QRIS transaction is already terminal", "transaction": response})
+		return
+	}
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "cancel QRIS transaction failed")
+		return
+	}
+	write(w, http.StatusOK, response)
+}
+
 func (s Server) getTenantQRISTransactionQR(w http.ResponseWriter, r *http.Request, tenant domain.Tenant) {
 	_, _ = s.Repo.ExpirePendingTestPayments(r.Context(), time.Now().UTC())
 	payment, err := s.Repo.TestPaymentForTenant(r.Context(), tenant.ID, r.PathValue("transaction_id"))
@@ -983,6 +1023,26 @@ func (s Server) public(next handler) http.HandlerFunc {
 	}
 }
 
+// publicPayment protects token-based checkout endpoints from malformed origins
+// while allowing a merchant-hosted checkout page to read its opaque session.
+// The token itself remains the authorization boundary; tenant API-key checks
+// continue to use public().
+func (s Server) publicPayment(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			parsed, ok := parseOrigin(origin)
+			if !ok {
+				problem(w, http.StatusForbidden, "invalid origin")
+				return
+			}
+			w.Header().Add("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Origin", parsed)
+		}
+		next(w, r)
+	}
+}
+
 func tenantPreflight(w http.ResponseWriter, r *http.Request) {
 	origin := r.Header.Get("Origin")
 	w.Header().Add("Vary", "Origin")
@@ -1053,6 +1113,197 @@ func rank(role string) int {
 	}
 	return 0
 }
+
+type publicPaymentTheme struct {
+	ID      string          `json:"id"`
+	Version int             `json:"version"`
+	Config  json.RawMessage `json:"config"`
+}
+
+type publicPaymentRedirect struct {
+	SuccessURL string `json:"success_url,omitempty"`
+	CancelURL  string `json:"cancel_url,omitempty"`
+	FailedURL  string `json:"failed_url,omitempty"`
+	ExpiredURL string `json:"expired_url,omitempty"`
+}
+
+// PublicPaymentSessionResponse is deliberately separate from domain.PaymentSession.
+// It contains only checkout-safe invoice/session/theme fields.
+type PublicPaymentSessionResponse struct {
+	SessionID     string                 `json:"session_id"`
+	InvoiceID     string                 `json:"invoice_id"`
+	Status        string                 `json:"status"`
+	PaymentStatus string                 `json:"payment_status"`
+	CheckoutURL   string                 `json:"checkout_url,omitempty"`
+	Amount        int64                  `json:"amount"`
+	Currency      string                 `json:"currency"`
+	Description   string                 `json:"description,omitempty"`
+	QRPayload     string                 `json:"qr_payload,omitempty"`
+	ExpiresAt     time.Time              `json:"expires_at"`
+	ServerNow     time.Time              `json:"server_now"`
+	Theme         *publicPaymentTheme    `json:"theme,omitempty"`
+	Redirect      *publicPaymentRedirect `json:"redirect,omitempty"`
+}
+
+type createPaymentSessionRequest struct {
+	InvoiceID  string `json:"invoice_id"`
+	ThemeID    string `json:"theme_id"`
+	SuccessURL string `json:"success_url"`
+	CancelURL  string `json:"cancel_url"`
+	FailedURL  string `json:"failed_url"`
+	ExpiredURL string `json:"expired_url"`
+}
+
+type paymentSessionConflictResponse struct {
+	Error   string                       `json:"error"`
+	Session PublicPaymentSessionResponse `json:"session"`
+}
+
+func (s Server) paymentSessionService() gateway.PaymentSessionService {
+	service := s.PaymentSessions
+	if service.Repo == nil {
+		service.Repo = s.Repo
+	}
+	if service.Now == nil {
+		service.Now = s.Gateway.Now
+	}
+	return service
+}
+
+func (s Server) createPaymentSession(w http.ResponseWriter, r *http.Request, tenant domain.Tenant) {
+	var in createPaymentSessionRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	if strings.TrimSpace(in.InvoiceID) == "" {
+		paymentSessionProblem(w, http.StatusBadRequest, "invalid_request", "invoice_id is required")
+		return
+	}
+	service := s.paymentSessionService()
+	created, err := service.CreatePaymentSession(r.Context(), gateway.CreatePaymentSessionInput{
+		TenantID: tenant.ID, InvoiceID: in.InvoiceID, ThemeID: in.ThemeID,
+		SuccessURL: in.SuccessURL, CancelURL: in.CancelURL, FailedURL: in.FailedURL, ExpiredURL: in.ExpiredURL,
+	})
+	if err != nil {
+		s.writePaymentSessionError(w, err)
+		return
+	}
+	snapshot, err := service.Snapshot(r.Context(), created.PublicToken)
+	if err != nil {
+		paymentSessionProblem(w, http.StatusInternalServerError, "internal_error", "payment session could not be resolved")
+		return
+	}
+	response := s.publicPaymentSessionResponse(snapshot)
+	response.CheckoutURL = s.checkoutURL(created.PublicToken)
+	write(w, http.StatusCreated, response)
+}
+
+func (s Server) getPaymentSession(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(r.PathValue("token"))
+	if token == "" || len(token) > 512 {
+		paymentSessionProblem(w, http.StatusNotFound, "not_found", "payment session not found")
+		return
+	}
+	snapshot, err := s.paymentSessionService().Snapshot(r.Context(), token)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			paymentSessionProblem(w, http.StatusNotFound, "not_found", "payment session not found")
+			return
+		}
+		paymentSessionProblem(w, http.StatusConflict, "conflict", "payment session state could not be resolved")
+		return
+	}
+	write(w, http.StatusOK, s.publicPaymentSessionResponse(snapshot))
+}
+
+func (s Server) cancelPaymentSession(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(r.PathValue("token"))
+	if token == "" || len(token) > 512 {
+		paymentSessionProblem(w, http.StatusNotFound, "not_found", "payment session not found")
+		return
+	}
+	snapshot, err := s.paymentSessionService().Cancel(r.Context(), token)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			paymentSessionProblem(w, http.StatusNotFound, "not_found", "payment session not found")
+			return
+		}
+		if errors.Is(err, gateway.ErrPaymentSessionStateConflict) {
+			write(w, http.StatusConflict, paymentSessionConflictResponse{Error: "payment session is already terminal", Session: s.publicPaymentSessionResponse(snapshot)})
+			return
+		}
+		paymentSessionProblem(w, http.StatusInternalServerError, "internal_error", "payment session cancellation failed")
+		return
+	}
+	write(w, http.StatusOK, s.publicPaymentSessionResponse(snapshot))
+}
+
+func (s Server) publicPaymentSessionResponse(snapshot gateway.PaymentSessionSnapshot) PublicPaymentSessionResponse {
+	response := PublicPaymentSessionResponse{
+		SessionID: snapshot.Session.ID, InvoiceID: snapshot.Invoice.ID,
+		Status:        publicPaymentSessionStatus(snapshot.Session.Status),
+		PaymentStatus: strings.ToLower(string(snapshot.Invoice.Status)), Amount: snapshot.Invoice.Amount,
+		Currency: snapshot.Invoice.Currency, Description: snapshot.Invoice.Description,
+		QRPayload: snapshot.Invoice.QRPayload, ExpiresAt: snapshot.Session.ExpiresAt,
+		ServerNow: time.Now().UTC(),
+	}
+	redirect := &publicPaymentRedirect{SuccessURL: snapshot.Session.SuccessURL, CancelURL: snapshot.Session.CancelURL, FailedURL: snapshot.Session.FailedURL, ExpiredURL: snapshot.Session.ExpiredURL}
+	if redirect.SuccessURL != "" || redirect.CancelURL != "" || redirect.FailedURL != "" || redirect.ExpiredURL != "" {
+		response.Redirect = redirect
+	}
+	if snapshot.Theme != nil {
+		config := append(json.RawMessage(nil), snapshot.Theme.Config...)
+		response.Theme = &publicPaymentTheme{ID: snapshot.Theme.ThemeID, Version: snapshot.Theme.Version, Config: config}
+	}
+	return response
+}
+
+func publicPaymentSessionStatus(status domain.PaymentSessionStatus) string {
+	switch status {
+	case domain.PaymentSessionOpen, domain.PaymentSessionPaymentPending:
+		return "payment_pending"
+	case domain.PaymentSessionPaid:
+		return "paid"
+	case domain.PaymentSessionCancelled:
+		return "cancelled"
+	case domain.PaymentSessionExpired:
+		return "expired"
+	case domain.PaymentSessionFailed:
+		return "failed"
+	case domain.PaymentSessionRedirecting:
+		return "redirecting"
+	case domain.PaymentSessionClosed:
+		return "closed"
+	default:
+		return "unknown"
+	}
+}
+
+func (s Server) checkoutURL(token string) string {
+	base := strings.TrimRight(strings.TrimSpace(s.PublicPaymentBaseURL), "/")
+	if base == "" {
+		base = "https://pay.alpakyros.net"
+	}
+	return base + "/pay/" + token
+}
+
+func (s Server) writePaymentSessionError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		paymentSessionProblem(w, http.StatusNotFound, "not_found", "invoice or payment session not found")
+	case errors.Is(err, store.ErrConflict):
+		paymentSessionProblem(w, http.StatusConflict, "conflict", "invoice or payment session state is not payable")
+	case strings.Contains(err.Error(), "redirect URL"):
+		paymentSessionProblem(w, http.StatusBadRequest, "invalid_redirect", "redirect URL is not allowed")
+	default:
+		paymentSessionProblem(w, http.StatusBadRequest, "invalid_request", err.Error())
+	}
+}
+
+func paymentSessionProblem(w http.ResponseWriter, status int, code, message string) {
+	write(w, status, map[string]string{"error": message, "code": code})
+}
+
 func (s Server) createInvoice(w http.ResponseWriter, r *http.Request, t domain.Tenant) {
 	var in struct {
 		MerchantAccountID string `json:"merchant_account_id"`

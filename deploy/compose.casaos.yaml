@@ -19,7 +19,7 @@ services:
       - -ec
       - |
         /usr/local/bin/migrate /migrations/000_bootstrap_core.sql
-        for migration in /migrations/004_merchant_connector.sql /migrations/007_restore_admin_feature_schema.sql /migrations/005_browser_credentials.sql /migrations/006_worker_test_payment_columns.sql /migrations/008_merchant_history_backfill.sql /migrations/009_test_payment_unique_code.sql /migrations/010_tenant_qris_transactions.sql /migrations/011_tenant_api_key_ciphertext.sql /migrations/012_tenant_sandbox_mode.sql /migrations/013_transaction_sandbox_mode.sql /migrations/014_unique_amount_codes.sql /migrations/015_unique_amount_cooldown.sql /migrations/016_browser_job_queue.sql /migrations/017_tenant_soft_delete.sql; do
+        for migration in /migrations/004_merchant_connector.sql /migrations/007_restore_admin_feature_schema.sql /migrations/005_browser_credentials.sql /migrations/006_worker_test_payment_columns.sql /migrations/008_merchant_history_backfill.sql /migrations/009_test_payment_unique_code.sql /migrations/010_tenant_qris_transactions.sql /migrations/011_tenant_api_key_ciphertext.sql /migrations/012_tenant_sandbox_mode.sql /migrations/013_transaction_sandbox_mode.sql /migrations/014_unique_amount_codes.sql /migrations/015_unique_amount_cooldown.sql /migrations/016_browser_job_queue.sql /migrations/017_tenant_soft_delete.sql /migrations/018_hosted_payment_foundation.sql /migrations/019_webhook_deliveries.sql /migrations/020_payment_theme_builder.sql /migrations/021_global_payment_theme_branding.sql /migrations/022_allow_uploaded_theme_images.sql; do
           /usr/local/bin/migrate "$$migration"
         done
     env_file: /DATA/AppData/xloyal/runtime.env

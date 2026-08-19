@@ -55,6 +55,105 @@ func TestGitHubWebhookRequiresValidSignatureAndSignalsMainCommit(t *testing.T) {
 	}
 }
 
+func TestAdminPaymentThemeLifecycleIsolationAndRBAC(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemory()
+	server := Server{Repo: repo, AdminTokens: map[string]string{"viewer": "viewer", "operator": "operator", "root": "super_admin"}}.Handler()
+	config := `{"schema_version":1,"template_key":"modern","colors":{"primary":"#1A5C55","background":"#F4F6F2","surface":"#FFFFFF","text":"#18231F","muted":"#68766F","success":"#16805B","danger":"#B44444"}}`
+	call := func(token, method, path, body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+token)
+		if body != "" {
+			r.Header.Set("Content-Type", "application/json")
+		}
+		server.ServeHTTP(w, r)
+		return w
+	}
+
+	viewerCreate := call("viewer", http.MethodPost, "/admin/payment-themes", `{"tenant_id":"tenant-a","name":"Blue","config":`+config+`}`)
+	if viewerCreate.Code != http.StatusForbidden {
+		t.Fatalf("viewer create=%d", viewerCreate.Code)
+	}
+	created := call("operator", http.MethodPost, "/admin/payment-themes", `{"tenant_id":"tenant-a","name":"Blue","config":`+config+`}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create=%d body=%s", created.Code, created.Body.String())
+	}
+	var theme themeDTO
+	if err := json.Unmarshal(created.Body.Bytes(), &theme); err != nil {
+		t.Fatal(err)
+	}
+	if theme.Status != domain.ThemeDraft || theme.Version != 0 {
+		t.Fatalf("created theme=%+v", theme)
+	}
+	if cross := call("viewer", http.MethodGet, "/admin/payment-themes/"+theme.ID+"?tenant_id=tenant-b", ""); cross.Code != http.StatusNotFound {
+		t.Fatalf("cross tenant=%d", cross.Code)
+	}
+	if bad := call("operator", http.MethodPut, "/admin/payment-themes/"+theme.ID+"?tenant_id=tenant-a", `{"name":"Blue","config":{"template_key":"modern","unexpected":"script"}}`); bad.Code != http.StatusBadRequest {
+		t.Fatalf("invalid config=%d", bad.Code)
+	}
+	published := call("operator", http.MethodPost, "/admin/payment-themes/"+theme.ID+"/publish?tenant_id=tenant-a", "")
+	if published.Code != http.StatusOK {
+		t.Fatalf("publish=%d body=%s", published.Code, published.Body.String())
+	}
+	first, err := repo.PublishedPaymentThemeVersion(ctx, "tenant-a", theme.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedConfig := strings.Replace(config, "#1A5C55", "#185FA5", 1)
+	updated := call("operator", http.MethodPut, "/admin/payment-themes/"+theme.ID+"?tenant_id=tenant-a", `{"name":"Blue v2","config":`+updatedConfig+`}`)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update published draft=%d body=%s", updated.Code, updated.Body.String())
+	}
+	if republish := call("operator", http.MethodPost, "/admin/payment-themes/"+theme.ID+"/publish?tenant_id=tenant-a", ""); republish.Code != http.StatusOK {
+		t.Fatalf("republish=%d", republish.Code)
+	}
+	if string(first.Config) != config {
+		t.Fatalf("published version was mutated: %s", first.Config)
+	}
+	if current, err := repo.PublishedPaymentThemeVersion(ctx, "tenant-a", theme.ID, 2); err != nil || string(current.Config) != updatedConfig {
+		t.Fatalf("version two=%+v err=%v", current, err)
+	}
+	if defaultDraft := call("operator", http.MethodPost, "/admin/payment-themes/"+theme.ID+"/set-default?tenant_id=tenant-a", ""); defaultDraft.Code != http.StatusOK {
+		t.Fatalf("set default=%d", defaultDraft.Code)
+	}
+	if archived := call("operator", http.MethodPost, "/admin/payment-themes/"+theme.ID+"/archive?tenant_id=tenant-a", ""); archived.Code != http.StatusConflict {
+		t.Fatalf("archive default=%d", archived.Code)
+	}
+	audit, err := repo.ListAudit(ctx, "tenant-a", 100)
+	if err != nil || len(audit) < 5 {
+		t.Fatalf("theme audit count=%d err=%v", len(audit), err)
+	}
+}
+
+func TestAdminPaymentThemeGlobalLibraryDoesNotRequireTenant(t *testing.T) {
+	repo := store.NewMemory()
+	server := Server{Repo: repo, AdminTokens: map[string]string{"operator": "operator"}}.Handler()
+	body := `{"name":"Global Checkout","config":{"schema_version":1,"template_key":"modern","tenant_branding":{"display_name":"Global Merchant","primary_color":"#1A5C55"}}}`
+	req := httptest.NewRequest(http.MethodPost, "/admin/payment-themes", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer operator")
+	req.Header.Set("Content-Type", "application/json")
+	created := httptest.NewRecorder()
+	server.ServeHTTP(created, req)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("global create=%d body=%s", created.Code, created.Body.String())
+	}
+	var theme themeDTO
+	if err := json.Unmarshal(created.Body.Bytes(), &theme); err != nil {
+		t.Fatal(err)
+	}
+	if theme.TenantID != "" {
+		t.Fatalf("global theme tenant=%q", theme.TenantID)
+	}
+	listReq := httptest.NewRequest(http.MethodGet, "/admin/payment-themes", nil)
+	listReq.Header.Set("Authorization", "Bearer operator")
+	listed := httptest.NewRecorder()
+	server.ServeHTTP(listed, listReq)
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), theme.ID) {
+		t.Fatalf("global list=%d body=%s", listed.Code, listed.Body.String())
+	}
+}
+
 type provider struct{}
 
 func (provider) CreatePayment(context.Context, domain.CreatePaymentRequest) (domain.CreatePaymentResult, error) {
@@ -886,6 +985,113 @@ func TestTenantQRISTransactionRoutesPersistAndAreIdempotent(t *testing.T) {
 	}
 }
 
+func TestTenantQRISCancelLifecycle(t *testing.T) {
+	repo := store.NewMemory()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", APIKeyHash: security.HashSecret("key-a"), Active: true})
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-b", APIKeyHash: security.HashSecret("key-b"), Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-a"})
+	next := now.Add(-time.Second)
+	pending := domain.TestPayment{ID: "payment-pending", QRISTemplateID: "template-a", MerchantID: "merchant-a", TenantID: "tenant-a", Amount: 1000, PayableAmount: 1000, DynamicPayload: "payload", Status: domain.InvoicePending, RequestSource: "tenant_api", MatchConfidence: "waiting_first_check", CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(30 * time.Minute), NextCheckAt: &next}
+	if err := repo.CreateTestPayment(ctx, pending); err != nil {
+		t.Fatal(err)
+	}
+	for _, terminal := range []domain.InvoiceStatus{domain.InvoicePaid, domain.InvoiceExpired, domain.InvoiceFailed} {
+		payment := pending
+		payment.ID, payment.Status, payment.NextCheckAt = "payment-"+string(terminal), terminal, nil
+		if err := repo.CreateTestPayment(ctx, payment); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pastDeadline := pending
+	pastDeadline.ID = "payment-past-deadline"
+	pastDeadline.Amount = 2000
+	pastDeadline.PayableAmount = 2000
+	pastDeadline.ExpiresAt = now.Add(-time.Second)
+	if err := repo.CreateTestPayment(ctx, pastDeadline); err != nil {
+		t.Fatal(err)
+	}
+	h := Server{Repo: repo}.Handler()
+	cancel := func(key, id string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-a/transactions/qris/"+id+"/cancel", nil)
+		req.Header.Set("X-API-Key", key)
+		h.ServeHTTP(w, req)
+		return w
+	}
+
+	first := cancel("key-a", pending.ID)
+	if first.Code != http.StatusOK || first.Header().Get("Retry-After") != "" || !strings.Contains(first.Body.String(), `"status":"cancelled"`) || !strings.Contains(first.Body.String(), `"match_confidence":"cancelled_by_tenant"`) || !strings.Contains(first.Body.String(), `"next_check_at":null`) {
+		t.Fatalf("first cancel code=%d body=%s", first.Code, first.Body.String())
+	}
+	queued, err := repo.PendingTestPayments(ctx, now, 10)
+	if err != nil {
+		t.Fatalf("cancelled payment still queued: %+v err=%v", queued, err)
+	}
+	for _, payment := range queued {
+		if payment.ID == pending.ID {
+			t.Fatalf("cancelled payment still queued: %+v", queued)
+		}
+	}
+	audits, err := repo.ListAudit(ctx, "tenant-a", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelAudits := 0
+	for _, event := range audits {
+		if event.Action == "qris.transaction_cancelled" && event.ResourceID == pending.ID {
+			cancelAudits++
+		}
+	}
+	if cancelAudits != 1 {
+		t.Fatalf("cancel audit count=%d events=%+v", cancelAudits, audits)
+	}
+
+	replay := cancel("key-a", pending.ID)
+	if replay.Code != http.StatusOK || !strings.Contains(replay.Body.String(), `"status":"cancelled"`) {
+		t.Fatalf("replay code=%d body=%s", replay.Code, replay.Body.String())
+	}
+	audits, _ = repo.ListAudit(ctx, "tenant-a", 20)
+	cancelAudits = 0
+	for _, event := range audits {
+		if event.Action == "qris.transaction_cancelled" && event.ResourceID == pending.ID {
+			cancelAudits++
+		}
+	}
+	if cancelAudits != 1 {
+		t.Fatalf("idempotent cancel duplicated audit count=%d", cancelAudits)
+	}
+
+	for _, terminal := range []domain.InvoiceStatus{domain.InvoicePaid, domain.InvoiceExpired, domain.InvoiceFailed} {
+		response := cancel("key-a", "payment-"+string(terminal))
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"status":"`+string(terminal)+`"`) {
+			t.Fatalf("terminal=%s code=%d body=%s", terminal, response.Code, response.Body.String())
+		}
+	}
+	pastDeadlineResponse := cancel("key-a", pastDeadline.ID)
+	if pastDeadlineResponse.Code != http.StatusConflict || !strings.Contains(pastDeadlineResponse.Body.String(), `"status":"expired"`) {
+		t.Fatalf("past deadline code=%d body=%s", pastDeadlineResponse.Code, pastDeadlineResponse.Body.String())
+	}
+
+	crossTenant := cancel("key-b", pending.ID)
+	if crossTenant.Code != http.StatusNotFound {
+		t.Fatalf("cross tenant code=%d body=%s", crossTenant.Code, crossTenant.Body.String())
+	}
+	missing := cancel("key-a", "missing-payment")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing transaction code=%d body=%s", missing.Code, missing.Body.String())
+	}
+
+	qr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/tenant-a/transactions/qris/"+pending.ID+"/qr", nil)
+	req.Header.Set("X-API-Key", "key-a")
+	h.ServeHTTP(qr, req)
+	if qr.Code != http.StatusGone {
+		t.Fatalf("cancelled qr code=%d body=%s", qr.Code, qr.Body.String())
+	}
+}
+
 func TestTenantQRISUniqueAmountAllocatesDistinctPayableAmounts(t *testing.T) {
 	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
 	repo := store.NewMemory()
@@ -1189,5 +1395,145 @@ func TestCreateTestPaymentInjectsUniqueCode(t *testing.T) {
 	stored, _ := repo.TestPayment(ctx, payment.ID)
 	if stored.UniqueCode != payment.UniqueCode || !strings.Contains(stored.DynamicPayload, payment.UniqueCode) {
 		t.Fatalf("stored=%+v", stored)
+	}
+}
+
+func TestPaymentSessionHTTPCreateSnapshotCancelAndPublicIsolation(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	repo := store.NewMemory()
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", APIKeyHash: security.HashSecret("key-a"), APIKeyCiphertext: "api-secret", WebhookSecretCiphertext: "webhook-secret", Active: true})
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-b", APIKeyHash: security.HashSecret("key-b"), Active: true})
+	repo.CreateInvoice(ctx, domain.Invoice{ID: "invoice-a", TenantID: "tenant-a", IdempotencyKey: "invoice-a", Amount: 100037, Currency: "IDR", Description: "public order", QRPayload: "qris-payload", Status: domain.InvoicePending, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	repo.CreateInvoice(ctx, domain.Invoice{ID: "redirect-invoice", TenantID: "tenant-a", IdempotencyKey: "redirect", Amount: 1000, Currency: "IDR", Status: domain.InvoicePending, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	service := gateway.PaymentSessionService{Repo: repo, Now: func() time.Time { return now }}
+	h := Server{Repo: repo, PaymentSessions: service, PublicPaymentBaseURL: "https://pay.example.test"}.Handler()
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/payment-sessions", strings.NewReader(`{"invoice_id":"invoice-a"}`))
+	createReq.Header.Set("X-API-Key", "key-a")
+	createRes := httptest.NewRecorder()
+	h.ServeHTTP(createRes, createReq)
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("create code=%d body=%s", createRes.Code, createRes.Body.String())
+	}
+	var created PublicPaymentSessionResponse
+	if err := json.Unmarshal(createRes.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Status != "payment_pending" || created.CheckoutURL == "" || !strings.HasPrefix(created.CheckoutURL, "https://pay.example.test/pay/") {
+		t.Fatalf("unexpected create response: %+v", created)
+	}
+	if strings.Contains(createRes.Body.String(), "api-secret") || strings.Contains(createRes.Body.String(), "webhook-secret") || strings.Contains(createRes.Body.String(), "key-a") {
+		t.Fatalf("public response leaked secret material: %s", createRes.Body.String())
+	}
+	token := strings.TrimPrefix(created.CheckoutURL, "https://pay.example.test/pay/")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/payment-sessions/"+token, nil)
+	getReq.Header.Set("Origin", "http://127.0.0.1:3000")
+	getRes := httptest.NewRecorder()
+	h.ServeHTTP(getRes, getReq)
+	if getRes.Code != http.StatusOK {
+		t.Fatalf("snapshot code=%d body=%s", getRes.Code, getRes.Body.String())
+	}
+	if got := getRes.Header().Get("Access-Control-Allow-Origin"); got != "http://127.0.0.1:3000" {
+		t.Fatalf("payment session CORS origin=%q", got)
+	}
+	var snapshot PublicPaymentSessionResponse
+	if err := json.Unmarshal(getRes.Body.Bytes(), &snapshot); err != nil || snapshot.Status != "payment_pending" || snapshot.Amount != 100037 {
+		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	}
+	wrongTokenRes := httptest.NewRecorder()
+	h.ServeHTTP(wrongTokenRes, httptest.NewRequest(http.MethodGet, "/v1/payment-sessions/not-a-real-token", nil))
+	if wrongTokenRes.Code != http.StatusNotFound {
+		t.Fatalf("wrong token should be 404, got %d", wrongTokenRes.Code)
+	}
+
+	cancelReq := httptest.NewRequest(http.MethodPost, "/v1/payment-sessions/"+token+"/cancel", nil)
+	cancelRes := httptest.NewRecorder()
+	h.ServeHTTP(cancelRes, cancelReq)
+	if cancelRes.Code != http.StatusOK {
+		t.Fatalf("cancel code=%d body=%s", cancelRes.Code, cancelRes.Body.String())
+	}
+	if err := json.Unmarshal(cancelRes.Body.Bytes(), &snapshot); err != nil || snapshot.Status != "cancelled" {
+		t.Fatalf("cancel snapshot=%+v err=%v", snapshot, err)
+	}
+	invoiceAfterCancel, err := repo.Invoice(ctx, "tenant-a", "invoice-a")
+	if err != nil || invoiceAfterCancel.Status != domain.InvoicePending {
+		t.Fatalf("session cancel changed invoice financial state: %+v err=%v", invoiceAfterCancel, err)
+	}
+	repeatRes := httptest.NewRecorder()
+	h.ServeHTTP(repeatRes, httptest.NewRequest(http.MethodPost, "/v1/payment-sessions/"+token+"/cancel", nil))
+	if repeatRes.Code != http.StatusOK {
+		t.Fatalf("cancel after cancelled should be idempotent, got %d", repeatRes.Code)
+	}
+	invalidRedirectReq := httptest.NewRequest(http.MethodPost, "/v1/payment-sessions", strings.NewReader(`{"invoice_id":"redirect-invoice","success_url":"https://attacker.example"}`))
+	invalidRedirectReq.Header.Set("X-API-Key", "key-a")
+	invalidRedirectRes := httptest.NewRecorder()
+	h.ServeHTTP(invalidRedirectRes, invalidRedirectReq)
+	if invalidRedirectRes.Code != http.StatusBadRequest || !strings.Contains(invalidRedirectRes.Body.String(), `"invalid_redirect"`) {
+		t.Fatalf("invalid redirect code=%d body=%s", invalidRedirectRes.Code, invalidRedirectRes.Body.String())
+	}
+
+	wrongTenantReq := httptest.NewRequest(http.MethodPost, "/v1/payment-sessions", strings.NewReader(`{"invoice_id":"invoice-a"}`))
+	wrongTenantReq.Header.Set("X-API-Key", "key-b")
+	wrongTenantRes := httptest.NewRecorder()
+	h.ServeHTTP(wrongTenantRes, wrongTenantReq)
+	if wrongTenantRes.Code != http.StatusNotFound {
+		t.Fatalf("cross-tenant invoice code=%d body=%s", wrongTenantRes.Code, wrongTenantRes.Body.String())
+	}
+}
+
+func TestPaymentSessionHTTPResolvesInvoicePaidAndExpiry(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	repo := store.NewMemory()
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant", APIKeyHash: security.HashSecret("key"), Active: true})
+	repo.CreateInvoice(ctx, domain.Invoice{ID: "paid-invoice", TenantID: "tenant", IdempotencyKey: "paid", Amount: 1000, Currency: "IDR", Status: domain.InvoicePending, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	repo.CreateInvoice(ctx, domain.Invoice{ID: "exp-invoice", TenantID: "tenant", IdempotencyKey: "exp", Amount: 1000, Currency: "IDR", Status: domain.InvoicePending, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(10 * time.Minute)})
+	clock := now
+	h := Server{Repo: repo, PaymentSessions: gateway.PaymentSessionService{Repo: repo, Now: func() time.Time { return clock }}, PublicPaymentBaseURL: "https://pay.example.test"}.Handler()
+
+	create := func(invoice string) string {
+		req := httptest.NewRequest(http.MethodPost, "/v1/payment-sessions", strings.NewReader(`{"invoice_id":"`+invoice+`"}`))
+		req.Header.Set("X-API-Key", "key")
+		res := httptest.NewRecorder()
+		h.ServeHTTP(res, req)
+		if res.Code != http.StatusCreated {
+			t.Fatalf("create %s code=%d body=%s", invoice, res.Code, res.Body.String())
+		}
+		var v PublicPaymentSessionResponse
+		_ = json.Unmarshal(res.Body.Bytes(), &v)
+		return strings.TrimPrefix(v.CheckoutURL, "https://pay.example.test/pay/")
+	}
+	paidToken := create("paid-invoice")
+	paid, _ := repo.Invoice(ctx, "tenant", "paid-invoice")
+	paid.Status = domain.InvoicePaid
+	repo.UpdateInvoice(ctx, paid)
+	get := httptest.NewRecorder()
+	h.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/v1/payment-sessions/"+paidToken, nil))
+	var paidSnapshot PublicPaymentSessionResponse
+	_ = json.Unmarshal(get.Body.Bytes(), &paidSnapshot)
+	if get.Code != http.StatusOK || paidSnapshot.Status != "paid" {
+		t.Fatalf("paid resolution code=%d snapshot=%+v", get.Code, paidSnapshot)
+	}
+	paidCancel := httptest.NewRecorder()
+	h.ServeHTTP(paidCancel, httptest.NewRequest(http.MethodPost, "/v1/payment-sessions/"+paidToken+"/cancel", nil))
+	if paidCancel.Code != http.StatusConflict {
+		t.Fatalf("paid cancel should conflict, got %d body=%s", paidCancel.Code, paidCancel.Body.String())
+	}
+
+	expToken := create("exp-invoice")
+	clock = now.Add(11 * time.Minute)
+	get = httptest.NewRecorder()
+	h.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/v1/payment-sessions/"+expToken, nil))
+	var expiredSnapshot PublicPaymentSessionResponse
+	_ = json.Unmarshal(get.Body.Bytes(), &expiredSnapshot)
+	if get.Code != http.StatusOK || expiredSnapshot.Status != "expired" {
+		t.Fatalf("expiry resolution code=%d snapshot=%+v", get.Code, expiredSnapshot)
+	}
+	expiredCancel := httptest.NewRecorder()
+	h.ServeHTTP(expiredCancel, httptest.NewRequest(http.MethodPost, "/v1/payment-sessions/"+expToken+"/cancel", nil))
+	if expiredCancel.Code != http.StatusConflict {
+		t.Fatalf("expired cancel should conflict, got %d body=%s", expiredCancel.Code, expiredCancel.Body.String())
 	}
 }

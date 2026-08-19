@@ -84,3 +84,53 @@ func TestExpiredUniqueAmountUsesCooldownBeforeReuse(t *testing.T) {
 		t.Fatalf("expired code after cooldown created=%v err=%v", created, err)
 	}
 }
+
+func TestCancelledUniqueAmountUsesCooldownBeforeReuse(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemory()
+	now := time.Date(2026, 8, 17, 14, 0, 0, 0, time.UTC)
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", UniqueAmountCooldownMinutes: 30, Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-a"})
+	first := domain.TestPayment{ID: "payment-cancelled", IdempotencyKey: "cancelled-order", QRISTemplateID: "template-a", MerchantID: "merchant-a", TenantID: "tenant-a", Amount: 1000, PayableAmount: 1021, UniqueAmountCode: 21, Status: domain.InvoicePending, RequestSource: "tenant_api", CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(30 * time.Minute)}
+	if _, _, _, _, err := repo.CreateTenantTestPayment(ctx, first, now, 100); err != nil {
+		t.Fatal(err)
+	}
+	cancelledAt := now.Add(time.Minute)
+	if _, _, err := repo.CancelPendingTestPayment(ctx, "tenant-a", first.ID, cancelledAt, domain.AuditEvent{ID: "cancel-audit", TenantID: "tenant-a", Actor: "tenant_api", Action: "qris.transaction_cancelled", ResourceType: "test_payment", ResourceID: first.ID, CreatedAt: cancelledAt}); err != nil {
+		t.Fatal(err)
+	}
+
+	reuse := first
+	reuse.ID, reuse.IdempotencyKey, reuse.Status = "payment-next", "next-order", domain.InvoicePending
+	reuse.CreatedAt, reuse.UpdatedAt, reuse.ExpiresAt = cancelledAt.Add(29*time.Minute), cancelledAt.Add(29*time.Minute), cancelledAt.Add(59*time.Minute)
+	if _, _, _, _, err := repo.CreateTenantTestPayment(ctx, reuse, reuse.CreatedAt, 100); !errors.Is(err, ErrUniqueAmountUnavailable) {
+		t.Fatalf("cancelled code reused during cooldown err=%v", err)
+	}
+	reuse.CreatedAt, reuse.UpdatedAt, reuse.ExpiresAt = cancelledAt.Add(30*time.Minute), cancelledAt.Add(30*time.Minute), cancelledAt.Add(60*time.Minute)
+	if _, created, _, _, err := repo.CreateTenantTestPayment(ctx, reuse, reuse.CreatedAt, 100); err != nil || !created {
+		t.Fatalf("cancelled code after cooldown created=%v err=%v", created, err)
+	}
+}
+
+func TestCancelledPayableAmountWithoutUniqueCodeUsesCooldownBeforeReuse(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemory()
+	now := time.Date(2026, 8, 17, 14, 0, 0, 0, time.UTC)
+	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", UniqueAmountCooldownMinutes: 30, Active: true})
+	repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template-a"})
+	first := domain.TestPayment{ID: "payment-cancelled-plain", IdempotencyKey: "cancelled-plain-order", QRISTemplateID: "template-a", MerchantID: "merchant-a", TenantID: "tenant-a", Amount: 1000, PayableAmount: 1000, Status: domain.InvoicePending, RequestSource: "tenant_api", CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(30 * time.Minute)}
+	if _, _, _, _, err := repo.CreateTenantTestPayment(ctx, first, now, 100); err != nil {
+		t.Fatal(err)
+	}
+	cancelledAt := now.Add(time.Minute)
+	if _, _, err := repo.CancelPendingTestPayment(ctx, "tenant-a", first.ID, cancelledAt, domain.AuditEvent{ID: "cancel-plain-audit", TenantID: "tenant-a", Actor: "tenant_api", Action: "qris.transaction_cancelled", ResourceType: "test_payment", ResourceID: first.ID, CreatedAt: cancelledAt}); err != nil {
+		t.Fatal(err)
+	}
+
+	reuse := first
+	reuse.ID, reuse.IdempotencyKey = "payment-plain-next", "plain-next-order"
+	reuse.CreatedAt, reuse.UpdatedAt, reuse.ExpiresAt = cancelledAt.Add(29*time.Minute), cancelledAt.Add(29*time.Minute), cancelledAt.Add(59*time.Minute)
+	if _, _, _, _, err := repo.CreateTenantTestPayment(ctx, reuse, reuse.CreatedAt, 100); !errors.Is(err, ErrUniqueAmountUnavailable) {
+		t.Fatalf("cancelled payable amount reused during cooldown err=%v", err)
+	}
+}

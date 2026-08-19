@@ -1,0 +1,38 @@
+name: xloyal-integration
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: xloyal_test
+      POSTGRES_USER: xloyal_test
+      POSTGRES_PASSWORD: xloyal_test
+    ports:
+      - "127.0.0.1:55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xloyal_test -d xloyal_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/backend.Dockerfile
+      target: runtime
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for migration in /migrations/*.sql; do
+          /usr/local/bin/migrate "$$migration"
+        done
+    environment:
+      DATABASE_URL: postgres://xloyal_test:xloyal_test@postgres:5432/xloyal_test?sslmode=disable
+    volumes:
+      - ../backend/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+

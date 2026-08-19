@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -12,7 +13,9 @@ import (
 	"xloyal/backend/internal/domain"
 	"xloyal/backend/internal/gateway"
 	"xloyal/backend/internal/qris"
+	"xloyal/backend/internal/security"
 	"xloyal/backend/internal/store"
+	"xloyal/backend/internal/webhook"
 )
 
 const PollInterval = time.Minute
@@ -27,6 +30,9 @@ const MerchantSyncTimeout = 11 * time.Minute
 const TestPaymentBatchSize = 500
 const BrowserJobLease = 13 * time.Minute
 const BrowserJobPollInterval = time.Second
+const OutboxPollInterval = time.Second
+const OutboxLease = time.Minute
+const OutboxBatchSize = 100
 
 type MerchantSync func(context.Context, domain.MerchantConnection) ([]domain.PortalTransaction, error)
 
@@ -38,9 +44,13 @@ type Worker struct {
 	Now          func() time.Time
 	Logger       *slog.Logger
 	JobOwner     string
+	Cipher       *security.Cipher
 }
 
 func (w Worker) RunOnce(ctx context.Context) error {
+	if err := w.dispatchOutbox(ctx); err != nil {
+		return err
+	}
 	if err := w.checkInvoices(ctx); err != nil {
 		return err
 	}
@@ -48,6 +58,79 @@ func (w Worker) RunOnce(ctx context.Context) error {
 		return err
 	}
 	return w.syncMerchants(ctx, w.now())
+}
+
+// dispatchOutbox is the durable worker-side dispatcher. SSE clients recover
+// from payment_events by sequence, so claiming/acknowledging here is safe even
+// when the API process (and its in-memory transport registry) restarts.
+func (w Worker) dispatchOutbox(ctx context.Context) error {
+	now := w.now()
+	owner := w.JobOwner
+	if owner == "" {
+		owner = "xloyal-worker"
+	}
+	items, err := w.Repo.ClaimOutboxEvents(ctx, owner, now, OutboxLease, OutboxBatchSize)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		events, eventErr := w.Repo.PaymentEvents(ctx, item.TenantID, item.AggregateID)
+		if eventErr != nil {
+			_ = w.Repo.MarkOutboxRetry(ctx, item.ID, owner, now, OutboxLease, eventErr.Error())
+			continue
+		}
+		var sequence int64
+		for _, event := range events {
+			if event.EventID == item.EventID {
+				sequence = event.SequenceNumber
+				break
+			}
+		}
+		if sequence == 0 {
+			_ = w.Repo.MarkOutboxFailed(ctx, item.ID, owner, now, "payment event not found")
+			continue
+		}
+		if err := (webhook.Delivery{Repo: w.Repo, Cipher: w.Cipher, Logger: w.Logger, Owner: owner}).EnqueueForEvent(ctx, eventForOutbox(events, item.EventID)); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				// The tenant may have been soft-deleted after the payment event.
+				// There is no destination left to deliver to, so acknowledge the
+				// durable event without exposing internal lookup details.
+				w.logger().Info("webhook delivery skipped for missing tenant", "tenant_id", item.TenantID, "event_id", item.EventID, "outbox_event_id", item.ID)
+			} else {
+				w.logger().Warn("webhook delivery enqueue failed", "tenant_id", item.TenantID, "event_id", item.EventID, "outbox_event_id", item.ID, "error", truncateError(err.Error()))
+				if retryErr := w.Repo.MarkOutboxRetry(ctx, item.ID, owner, now, OutboxLease, truncateError(err.Error())); retryErr != nil && !errors.Is(retryErr, store.ErrConflict) {
+					return retryErr
+				}
+				continue
+			}
+		}
+		w.logger().Info("payment event dispatched", "payment_session_id", item.AggregateID, "invoice_id", eventInvoiceID(events, item.EventID), "event_id", item.EventID, "sequence", sequence, "outbox_event_id", item.ID, "subscriber_count", 0)
+		if err := w.Repo.MarkOutboxDelivered(ctx, item.ID, owner, now); err != nil && !errors.Is(err, store.ErrConflict) {
+			return err
+		}
+	}
+	if err := (webhook.Delivery{Repo: w.Repo, Cipher: w.Cipher, Logger: w.Logger, Owner: owner}).DispatchOnce(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func eventForOutbox(events []domain.PaymentEvent, eventID string) domain.PaymentEvent {
+	for _, event := range events {
+		if event.EventID == eventID {
+			return event
+		}
+	}
+	return domain.PaymentEvent{}
+}
+
+func eventInvoiceID(events []domain.PaymentEvent, eventID string) string {
+	for _, event := range events {
+		if event.EventID == eventID {
+			return event.InvoiceID
+		}
+	}
+	return ""
 }
 
 func (w Worker) checkInvoices(ctx context.Context) error {
@@ -447,10 +530,12 @@ func (w Worker) Run(ctx context.Context) error {
 	testPaymentTicker := time.NewTicker(TestPaymentQueuePollInterval)
 	merchantTicker := time.NewTicker(MerchantQueuePollInterval)
 	jobTicker := time.NewTicker(BrowserJobPollInterval)
+	outboxTicker := time.NewTicker(OutboxPollInterval)
 	defer invoiceTicker.Stop()
 	defer testPaymentTicker.Stop()
 	defer merchantTicker.Stop()
 	defer jobTicker.Stop()
+	defer outboxTicker.Stop()
 	type jobResult struct {
 		processed bool
 		err       error
@@ -479,6 +564,10 @@ func (w Worker) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-outboxTicker.C:
+			if err := w.dispatchOutbox(ctx); err != nil {
+				return err
+			}
 		case <-invoiceTicker.C:
 			if err := w.checkInvoices(ctx); err != nil {
 				return err

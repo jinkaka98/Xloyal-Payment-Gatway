@@ -9,14 +9,232 @@ import (
 type InvoiceStatus string
 
 const (
-	InvoiceCreating InvoiceStatus = "creating"
-	InvoicePending  InvoiceStatus = "pending"
-	InvoicePaid     InvoiceStatus = "paid"
-	InvoiceExpired  InvoiceStatus = "expired"
-	InvoiceFailed   InvoiceStatus = "failed"
+	InvoiceCreating  InvoiceStatus = "creating"
+	InvoicePending   InvoiceStatus = "pending"
+	InvoicePaid      InvoiceStatus = "paid"
+	InvoiceExpired   InvoiceStatus = "expired"
+	InvoiceFailed    InvoiceStatus = "failed"
+	InvoiceCancelled InvoiceStatus = "cancelled"
+)
+
+func IsPaymentEventType(eventType string) bool {
+	switch eventType {
+	case PaymentEventCreated, PaymentEventPending, PaymentEventVerifying, PaymentEventPaid,
+		PaymentEventFailed, PaymentEventExpired, PaymentEventCancelled, PaymentEventRedirecting, PaymentEventClosed:
+		return true
+	default:
+		return false
+	}
+}
+
+const (
+	PaymentEventCreated     = "payment.created"
+	PaymentEventPending     = "payment.pending"
+	PaymentEventVerifying   = "payment.verifying"
+	PaymentEventPaid        = "payment.paid"
+	PaymentEventFailed      = "payment.failed"
+	PaymentEventExpired     = "payment.expired"
+	PaymentEventCancelled   = "payment.cancelled"
+	PaymentEventRedirecting = "payment.redirecting"
+	PaymentEventClosed      = "payment.closed"
+
+	OutboxPending    = "PENDING"
+	OutboxProcessing = "PROCESSING"
+	OutboxDelivered  = "DELIVERED"
+	OutboxFailed     = "FAILED"
+
+	ThemeDraft     = "DRAFT"
+	ThemePublished = "PUBLISHED"
+	ThemeArchived  = "ARCHIVED"
+
+	RedirectSuccess = "SUCCESS"
+	RedirectCancel  = "CANCEL"
+	RedirectFailed  = "FAILED"
+	RedirectExpired = "EXPIRED"
 )
 
 var ErrInvalidTransition = errors.New("invalid invoice status transition")
+
+type PaymentSessionStatus string
+
+const (
+	PaymentSessionOpen           PaymentSessionStatus = "OPEN"
+	PaymentSessionPaymentPending PaymentSessionStatus = "PAYMENT_PENDING"
+	PaymentSessionPaid           PaymentSessionStatus = "PAID"
+	PaymentSessionCancelled      PaymentSessionStatus = "CANCELLED"
+	PaymentSessionExpired        PaymentSessionStatus = "EXPIRED"
+	PaymentSessionFailed         PaymentSessionStatus = "FAILED"
+	PaymentSessionRedirecting    PaymentSessionStatus = "REDIRECTING"
+	PaymentSessionClosed         PaymentSessionStatus = "CLOSED"
+)
+
+var ErrInvalidPaymentSessionTransition = errors.New("invalid payment session status transition")
+
+func (s PaymentSessionStatus) CanTransition(next PaymentSessionStatus) bool {
+	return (s == PaymentSessionOpen && next == PaymentSessionPaymentPending) ||
+		(s == PaymentSessionPaymentPending && (next == PaymentSessionPaid || next == PaymentSessionCancelled || next == PaymentSessionExpired || next == PaymentSessionFailed)) ||
+		(s == PaymentSessionPaid && next == PaymentSessionRedirecting) ||
+		(s == PaymentSessionRedirecting && next == PaymentSessionClosed)
+}
+
+// PaymentEventTypeForTransition binds persisted lifecycle events to the state
+// transition that produced them. Transport callers cannot choose an unrelated
+// event name for a valid state change.
+func (s PaymentSessionStatus) PaymentEventTypeForTransition(next PaymentSessionStatus) (string, bool) {
+	if !s.CanTransition(next) {
+		return "", false
+	}
+	switch next {
+	case PaymentSessionPaymentPending:
+		return PaymentEventPending, true
+	case PaymentSessionPaid:
+		return PaymentEventPaid, true
+	case PaymentSessionCancelled:
+		return PaymentEventCancelled, true
+	case PaymentSessionExpired:
+		return PaymentEventExpired, true
+	case PaymentSessionFailed:
+		return PaymentEventFailed, true
+	case PaymentSessionRedirecting:
+		return PaymentEventRedirecting, true
+	case PaymentSessionClosed:
+		return PaymentEventClosed, true
+	default:
+		return "", false
+	}
+}
+
+func (s PaymentSessionStatus) InvoiceTerminalStatus() (InvoiceStatus, bool) {
+	switch s {
+	case PaymentSessionPaid:
+		return InvoicePaid, true
+	case PaymentSessionExpired:
+		return InvoiceExpired, true
+	case PaymentSessionFailed:
+		return InvoiceFailed, true
+	default:
+		return "", false
+	}
+}
+
+type PaymentSession struct {
+	ID              string               `json:"id"`
+	TenantID        string               `json:"tenant_id"`
+	InvoiceID       string               `json:"invoice_id"`
+	PublicTokenHash string               `json:"-"`
+	Status          PaymentSessionStatus `json:"status"`
+	ThemeID         string               `json:"theme_id,omitempty"`
+	ThemeVersion    int                  `json:"theme_version"`
+	ReturnURL       string               `json:"return_url,omitempty"`
+	SuccessURL      string               `json:"success_url,omitempty"`
+	CancelURL       string               `json:"cancel_url,omitempty"`
+	FailedURL       string               `json:"failed_url,omitempty"`
+	ExpiredURL      string               `json:"expired_url,omitempty"`
+	ExpiresAt       time.Time            `json:"expires_at"`
+	LastSeenAt      *time.Time           `json:"last_seen_at,omitempty"`
+	CreatedAt       time.Time            `json:"created_at"`
+	UpdatedAt       time.Time            `json:"updated_at"`
+}
+
+func (p *PaymentSession) Transition(next PaymentSessionStatus, now time.Time) error {
+	if !p.Status.CanTransition(next) {
+		return ErrInvalidPaymentSessionTransition
+	}
+	p.Status = next
+	p.UpdatedAt = now
+	return nil
+}
+
+type PaymentEvent struct {
+	ID               string    `json:"id"`
+	EventID          string    `json:"event_id"`
+	TenantID         string    `json:"tenant_id"`
+	InvoiceID        string    `json:"invoice_id"`
+	PaymentSessionID string    `json:"payment_session_id"`
+	SequenceNumber   int64     `json:"sequence_number"`
+	EventType        string    `json:"event_type"`
+	Payload          []byte    `json:"payload"`
+	OccurredAt       time.Time `json:"occurred_at"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+type OutboxEvent struct {
+	ID            string     `json:"id"`
+	EventID       string     `json:"event_id"`
+	TenantID      string     `json:"tenant_id"`
+	EventType     string     `json:"event_type"`
+	AggregateType string     `json:"aggregate_type"`
+	AggregateID   string     `json:"aggregate_id"`
+	Payload       []byte     `json:"payload"`
+	Status        string     `json:"status"`
+	AttemptCount  int        `json:"attempt_count"`
+	NextAttemptAt time.Time  `json:"next_attempt_at"`
+	LastError     string     `json:"last_error,omitempty"`
+	LockedAt      *time.Time `json:"locked_at,omitempty"`
+	LockedBy      string     `json:"locked_by,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ProcessedAt   *time.Time `json:"processed_at,omitempty"`
+}
+
+const (
+	WebhookDeliveryPending    = "PENDING"
+	WebhookDeliveryDelivering = "DELIVERING"
+	WebhookDeliveryRetrying   = "RETRYING"
+	WebhookDeliveryDelivered  = "DELIVERED"
+	WebhookDeliveryFailed     = "FAILED"
+)
+
+type WebhookDelivery struct {
+	ID               string     `json:"id"`
+	TenantID         string     `json:"tenant_id"`
+	EventID          string     `json:"event_id"`
+	EventType        string     `json:"event_type"`
+	PaymentSessionID string     `json:"payment_session_id"`
+	InvoiceID        string     `json:"invoice_id"`
+	Endpoint         string     `json:"endpoint"`
+	Payload          []byte     `json:"payload"`
+	Status           string     `json:"status"`
+	AttemptCount     int        `json:"attempt_count"`
+	NextAttemptAt    time.Time  `json:"next_attempt_at"`
+	LastError        string     `json:"last_error,omitempty"`
+	LastStatusCode   int        `json:"last_status_code,omitempty"`
+	LockedAt         *time.Time `json:"locked_at,omitempty"`
+	LockedBy         string     `json:"locked_by,omitempty"`
+	DeliveredAt      *time.Time `json:"delivered_at,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+}
+
+type PaymentTheme struct {
+	ID             string    `json:"id"`
+	TenantID       string    `json:"tenant_id"`
+	Name           string    `json:"name"`
+	Status         string    `json:"status"`
+	IsDefault      bool      `json:"is_default"`
+	CurrentVersion int       `json:"current_version"`
+	DraftConfig    []byte    `json:"draft_config,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+type PaymentThemeVersion struct {
+	ID        string    `json:"id"`
+	ThemeID   string    `json:"theme_id"`
+	Version   int       `json:"version"`
+	Status    string    `json:"status"`
+	Config    []byte    `json:"config"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type AllowedRedirectURL struct {
+	ID        string    `json:"id"`
+	TenantID  string    `json:"tenant_id"`
+	URL       string    `json:"url"`
+	Type      string    `json:"type"`
+	Active    bool      `json:"active"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
 
 type Invoice struct {
 	ID                  string        `json:"id"`
@@ -59,6 +277,8 @@ type Tenant struct {
 	UniqueAmountCooldownMinutes int       `json:"unique_amount_cooldown_minutes"`
 	APIKeyHash                  string    `json:"-"`
 	APIKeyCiphertext            string    `json:"-"`
+	WebhookSecretCiphertext     string    `json:"-"`
+	WebhookReplayWindowSeconds  int       `json:"webhook_replay_window_seconds"`
 	APIKeyRecoverable           bool      `json:"api_key_recoverable"`
 	Active                      bool      `json:"active"`
 	CreatedAt                   time.Time `json:"created_at"`
@@ -186,7 +406,7 @@ type TestPayment struct {
 	UpdatedAt            time.Time     `json:"updated_at"`
 	ExpiresAt            time.Time     `json:"expires_at"`
 	LastCheckedAt        *time.Time    `json:"last_checked_at,omitempty"`
-	NextCheckAt          *time.Time    `json:"next_check_at,omitempty"`
+	NextCheckAt          *time.Time    `json:"next_check_at"`
 	CheckCount           int           `json:"check_count"`
 	SandboxMode          bool          `json:"sandbox_mode"`
 }

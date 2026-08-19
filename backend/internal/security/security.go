@@ -17,6 +17,20 @@ func HashSecret(value string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
+// GeneratePublicPaymentToken returns an opaque URL-safe token. Only its hash is persisted.
+func GeneratePublicPaymentToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func HashPublicPaymentToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
 type Cipher struct{ aead cipher.AEAD }
 
 func NewCipher(key []byte) (*Cipher, error) {

@@ -8,11 +8,15 @@ const merchantID = /^[A-Za-z0-9_-]{1,128}$/;
 async function authorize() { return verifySessionToken((await cookies()).get(SESSION_COOKIE)?.value, process.env.CONSOLE_SESSION_SECRET ?? ""); }
 function resolvePath(method: string, parts: string[]) {
   const [resource, id, connection, action] = parts;
-  const getResources = new Set(["health", "qris-templates", "qris-test-payments", "merchant-accounts", "dashboard", "invoices", "audit-events", "merchant-transactions", "tenant-transactions", "global-transactions", "merchant-ids"]);
-  if (parts.length === 1 && method === "GET" && resource && getResources.has(resource)) return `/admin/${resource}`;
+  const getResources = new Set(["health", "qris-templates", "qris-test-payments", "merchant-accounts", "dashboard", "invoices", "audit-events", "merchant-transactions", "tenant-transactions", "global-transactions", "merchant-ids", "payment-themes"]);
+  if (parts.length === 1 && resource && getResources.has(resource) && ["GET", "POST"].includes(method)) return `/admin/${resource}`;
   if (resource === "merchant-accounts" && parts.length === 2 && id && merchantID.test(id) && ["GET", "PUT"].includes(method)) return `/admin/merchant-accounts/${id}`;
   if (resource === "tenants" && parts.length === 1 && ["GET", "POST"].includes(method)) return "/admin/tenants";
   if (resource === "tenants" && parts.length === 2 && id && merchantID.test(id) && ["PUT", "DELETE"].includes(method)) return `/admin/tenants/${id}`;
+  if (resource === "payment-themes" && id && merchantID.test(id)) {
+    if (parts.length === 2 && ["GET", "PUT", "DELETE"].includes(method)) return `/admin/payment-themes/${id}`;
+    if (parts.length === 3 && ["publish", "duplicate", "set-default", "archive", "preview"].includes(connection ?? "") && (method === "POST" || (method === "GET" && connection === "preview"))) return `/admin/payment-themes/${id}/${connection}`;
+  }
   if (resource === "tenants" && parts.length === 3 && id && merchantID.test(id) && connection === "credentials" && method === "GET") return `/admin/tenants/${id}/credentials`;
   if (resource === "tenants" && parts.length === 4 && id && merchantID.test(id) && connection === "credentials" && action === "rotate" && method === "POST") return `/admin/tenants/${id}/credentials/rotate`;
   if (resource === "merchant-ids" && parts.length === 1 && method === "POST") return "/admin/merchant-ids";

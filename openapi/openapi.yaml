@@ -23,6 +23,49 @@
         "responses": {"200": {"description": "Healthy", "content": {"application/json": {"schema": {"type": "object", "required": ["status"], "properties": {"status": {"const": "ok"}}}}}}}
       }
     },
+    "/v1/payment-sessions": {
+      "post": {
+        "tags": ["Public"],
+        "operationId": "createPaymentSession",
+        "security": [{"ApiKey": []}],
+        "parameters": [{"name": "Idempotency-Key", "in": "header", "required": false, "schema": {"type": "string", "maxLength": 200}, "description": "Reserved for retry correlation; one active session is permitted per tenant invoice."}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreatePaymentSession"}}}},
+        "responses": {
+          "201": {"description": "Payment session created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PaymentSession"}}}},
+          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}
+        }
+      }
+    },
+    "/v1/payment-sessions/{token}": {
+      "get": {
+        "tags": ["Public"], "operationId": "getPaymentSession",
+        "parameters": [{"name": "token", "in": "path", "required": true, "schema": {"type": "string", "minLength": 32, "maxLength": 512}}],
+        "responses": {"200": {"description": "Public payment session snapshot", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PaymentSession"}}}}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
+    "/v1/payment-sessions/{token}/events": {
+      "get": {
+        "tags": ["Public"], "operationId": "paymentSessionEvents",
+        "parameters": [
+          {"name": "token", "in": "path", "required": true, "schema": {"type": "string", "minLength": 32, "maxLength": 512}},
+          {"name": "after_sequence", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 0}, "description": "Resume events with sequence greater than this cursor."}
+        ],
+        "responses": {
+          "200": {"description": "At-least-once public payment event stream", "content": {"text/event-stream": {"schema": {"type": "string", "example": "event: payment.paid\\nid: 3\\ndata: {\\\"event_id\\\":\\\"evt_opaque\\\",\\\"payment_session_id\\\":\\\"sess_opaque\\\",\\\"invoice_id\\\":\\\"inv_opaque\\\",\\\"status\\\":\\\"paid\\\",\\\"sequence\\\":3,\\\"occurred_at\\\":\\\"2026-08-18T00:02:00Z\\\"}\\n\\n"}}}},
+          "400": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}
+        }
+      }
+    },
+    "/v1/payment-sessions/{token}/cancel": {
+      "post": {
+        "tags": ["Public"], "operationId": "cancelPaymentSession",
+        "parameters": [{"name": "token", "in": "path", "required": true, "schema": {"type": "string", "minLength": 32, "maxLength": 512}}],
+        "responses": {
+          "200": {"description": "Payment session cancelled or already cancelled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PaymentSession"}}}},
+          "404": {"$ref": "#/components/responses/Problem"}, "409": {"description": "Payment session reached a terminal state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PaymentSessionConflict"}}}}
+        }
+      }
+    },
     "/v1/tenants/{tenant_id}/invoices": {
       "post": {
         "tags": ["Public"],
@@ -70,11 +113,19 @@
         "responses": {"200": {"description": "QRIS transaction status", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/TenantOriginDenied"}, "404": {"$ref": "#/components/responses/Problem"}}
       }
     },
+    "/v1/tenants/{tenant_id}/transactions/qris/{transaction_id}/cancel": {
+      "post": {
+        "tags": ["Public"], "operationId": "cancelTenantQRISTransaction", "security": [{"ApiKey": []}],
+        "description": "Atomically cancel a pending tenant QRIS transaction. Repeated cancellation is idempotent. Paid, expired, or failed transactions return the current terminal transaction with HTTP 409.",
+        "parameters": [{"$ref": "#/components/parameters/TenantId"}, {"name": "transaction_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Transaction cancelled or already cancelled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/TenantOriginDenied"}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"description": "Transaction already reached a non-cancellable terminal status", "content": {"application/json": {"schema": {"type": "object", "required": ["error", "transaction"], "properties": {"error": {"type": "string"}, "transaction": {"$ref": "#/components/schemas/TenantQRISTransaction"}}}}}}, "500": {"$ref": "#/components/responses/Problem"}}
+      }
+    },
     "/v1/tenants/{tenant_id}/transactions/qris/{transaction_id}/qr": {
       "get": {
         "tags": ["Public"], "operationId": "tenantQRISTransactionImage", "security": [{"ApiKey": []}],
         "parameters": [{"$ref": "#/components/parameters/TenantId"}, {"name": "transaction_id", "in": "path", "required": true, "schema": {"type": "string"}}],
-        "responses": {"200": {"description": "QR code PNG", "content": {"image/png": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/TenantOriginDenied"}, "404": {"$ref": "#/components/responses/Problem"}}
+        "responses": {"200": {"description": "QR code PNG", "content": {"image/png": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/TenantOriginDenied"}, "404": {"$ref": "#/components/responses/Problem"}, "410": {"$ref": "#/components/responses/Problem"}}
       }
     },
     "/v1/tenants/{tenant_id}/qris/templates": {
@@ -270,6 +321,20 @@
         "responses": {"200": {"description": "Generated dynamic QRIS PNG", "content": {"image/png": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "404": {"$ref": "#/components/responses/Problem"}}
       }
     },
+    "/admin/payment-themes": {
+      "get": {"tags":["Admin"],"operationId":"listPaymentThemes","security":[{"AdminBearer":[]}],"parameters":[{"$ref":"#/components/parameters/TenantFilter"}],"responses":{"200":{"description":"Theme list","content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/PaymentTheme"}}}}},"400":{"$ref":"#/components/responses/Problem"},"403":{"$ref":"#/components/responses/Problem"}}},
+      "post": {"tags":["Admin"],"operationId":"createPaymentTheme","security":[{"AdminBearer":[]}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CreatePaymentTheme"}}}},"responses":{"201":{"description":"Draft created","content":{"application/json":{"schema":{"$ref":"#/components/schemas/PaymentTheme"}}}},"400":{"$ref":"#/components/responses/Problem"},"403":{"$ref":"#/components/responses/Problem"}}}
+    },
+    "/admin/payment-themes/{id}": {
+      "get": {"tags":["Admin"],"operationId":"getPaymentTheme","security":[{"AdminBearer":[]}],"parameters":[{"$ref":"#/components/parameters/ThemeId"},{"$ref":"#/components/parameters/TenantFilter"}],"responses":{"200":{"description":"Theme detail","content":{"application/json":{"schema":{"$ref":"#/components/schemas/PaymentTheme"}}}},"404":{"$ref":"#/components/responses/Problem"}}},
+      "put": {"tags":["Admin"],"operationId":"updatePaymentThemeDraft","security":[{"AdminBearer":[]}],"parameters":[{"$ref":"#/components/parameters/ThemeId"},{"$ref":"#/components/parameters/TenantFilter"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/UpdatePaymentTheme"}}}},"responses":{"200":{"description":"Draft saved","content":{"application/json":{"schema":{"$ref":"#/components/schemas/PaymentTheme"}}}},"400":{"$ref":"#/components/responses/Problem"},"404":{"$ref":"#/components/responses/Problem"}}},
+      "delete": {"tags":["Admin"],"operationId":"deletePaymentTheme","security":[{"AdminBearer":[]}],"parameters":[{"$ref":"#/components/parameters/ThemeId"},{"$ref":"#/components/parameters/TenantFilter"}],"responses":{"200":{"description":"Draft deleted"},"403":{"$ref":"#/components/responses/Problem"},"409":{"$ref":"#/components/responses/Problem"}}}
+    },
+    "/admin/payment-themes/{id}/publish": {"post":{"tags":["Admin"],"operationId":"publishPaymentTheme","security":[{"AdminBearer":[]}],"parameters":[{"$ref":"#/components/parameters/ThemeId"},{"$ref":"#/components/parameters/TenantFilter"}],"responses":{"200":{"description":"Immutable version published","content":{"application/json":{"schema":{"$ref":"#/components/schemas/PaymentTheme"}}}},"409":{"$ref":"#/components/responses/Problem"}}}},
+    "/admin/payment-themes/{id}/duplicate": {"post":{"tags":["Admin"],"operationId":"duplicatePaymentTheme","security":[{"AdminBearer":[]}],"parameters":[{"$ref":"#/components/parameters/ThemeId"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/DuplicatePaymentTheme"}}}},"responses":{"201":{"description":"Draft duplicate","content":{"application/json":{"schema":{"$ref":"#/components/schemas/PaymentTheme"}}}},"404":{"$ref":"#/components/responses/Problem"}}}},
+    "/admin/payment-themes/{id}/set-default": {"post":{"tags":["Admin"],"operationId":"setDefaultPaymentTheme","security":[{"AdminBearer":[]}],"parameters":[{"$ref":"#/components/parameters/ThemeId"},{"$ref":"#/components/parameters/TenantFilter"}],"responses":{"200":{"description":"Tenant default set","content":{"application/json":{"schema":{"$ref":"#/components/schemas/PaymentTheme"}}}},"409":{"$ref":"#/components/responses/Problem"}}}},
+    "/admin/payment-themes/{id}/archive": {"post":{"tags":["Admin"],"operationId":"archivePaymentTheme","security":[{"AdminBearer":[]}],"parameters":[{"$ref":"#/components/parameters/ThemeId"},{"$ref":"#/components/parameters/TenantFilter"}],"responses":{"200":{"description":"Theme archived","content":{"application/json":{"schema":{"$ref":"#/components/schemas/PaymentTheme"}}}},"409":{"$ref":"#/components/responses/Problem"}}}},
+    "/admin/payment-themes/{id}/preview": {"get":{"tags":["Admin"],"operationId":"previewPaymentTheme","security":[{"AdminBearer":[]}],"parameters":[{"$ref":"#/components/parameters/ThemeId"},{"$ref":"#/components/parameters/TenantFilter"}],"responses":{"200":{"description":"Public-safe theme configuration for the local renderer","content":{"application/json":{"schema":{"$ref":"#/components/schemas/PaymentTheme"}}}}}}},
     "/admin/audit-events": {
       "get": {
         "tags": ["Admin"], "operationId": "listAuditEvents", "security": [{"AdminBearer": []}],
@@ -286,7 +351,8 @@
     "parameters": {
       "TenantId": {"name": "tenant_id", "in": "path", "required": true, "schema": {"type": "string"}},
       "InvoiceId": {"name": "invoice_id", "in": "path", "required": true, "schema": {"type": "string"}},
-      "TenantFilter": {"name": "tenant_id", "in": "query", "required": false, "schema": {"type": "string"}}
+      "TenantFilter": {"name": "tenant_id", "in": "query", "required": false, "schema": {"type": "string"}},
+      "ThemeId": {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}
     },
     "responses": {
       "Problem": {"description": "Error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
@@ -294,6 +360,42 @@
     },
     "schemas": {
       "Problem": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}, "code": {"type": "string"}}},
+      "CreatePaymentSession": {
+        "type": "object", "additionalProperties": false, "required": ["invoice_id"],
+        "properties": {
+          "invoice_id": {"type": "string", "minLength": 1}, "theme_id": {"type": "string"},
+          "success_url": {"type": "string", "format": "uri"}, "cancel_url": {"type": "string", "format": "uri"},
+          "failed_url": {"type": "string", "format": "uri"}, "expired_url": {"type": "string", "format": "uri"}
+        }
+      },
+      "PaymentThemePublic": {
+        "type": "object", "required": ["id", "version", "config"],
+        "properties": {"id": {"type": "string"}, "version": {"type": "integer", "minimum": 1}, "config": {"type": "object"}}
+      },
+      "PaymentThemeConfig": {"type": "object", "maxProperties": 9, "additionalProperties": false, "required": ["template_key"], "properties": {"schema_version": {"type": "integer", "const": 1}, "template_key": {"type": "string", "enum": ["modern", "minimal", "dark", "corporate", "compact"]}, "branding": {"type": "object", "additionalProperties": false, "properties": {"display_name": {"type": "string", "maxLength": 240}, "logo_url": {"type": "string", "description": "HTTPS URL or base64 data image up to 48KB"}, "tagline": {"type": "string", "maxLength": 240}}}, "colors": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"}}, "layout": {"type": "object", "additionalProperties": false, "properties": {"max_width": {"type": "integer", "minimum": 320, "maximum": 720}, "radius": {"type": "integer", "minimum": 0, "maximum": 32}, "density": {"type": "string", "enum": ["comfortable", "compact"]}}}, "payment_visibility": {"type": "object", "additionalProperties": {"type": "boolean"}}, "timer": {"type": "object", "additionalProperties": false, "properties": {"enabled": {"type": "boolean"}, "warning_seconds": {"type": "integer", "minimum": 0, "maximum": 3600}}}, "success_copy": {"type": "object", "additionalProperties": false, "properties": {"title": {"type": "string", "maxLength": 240}, "message": {"type": "string", "maxLength": 240}}}, "redirect_delay": {"type": "integer", "minimum": 0, "maximum": 30}}},
+      "PaymentTheme": {"type": "object", "required": ["id", "tenant_id", "name", "status", "version", "is_default", "created_at", "updated_at"], "properties": {"id": {"type": "string"}, "tenant_id": {"type": "string"}, "name": {"type": "string"}, "template": {"type": "string"}, "status": {"type": "string", "enum": ["DRAFT", "PUBLISHED", "ARCHIVED"]}, "version": {"type": "integer", "minimum": 0}, "is_default": {"type": "boolean"}, "config": {"$ref": "#/components/schemas/PaymentThemeConfig"}, "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}}},
+      "CreatePaymentTheme": {"type": "object", "additionalProperties": false, "required": ["name"], "properties": {"tenant_id": {"type": "string"}, "name": {"type": "string", "minLength": 1, "maxLength": 120}, "template": {"type": "string", "enum": ["modern", "minimal", "dark", "corporate", "compact"]}, "config": {"$ref": "#/components/schemas/PaymentThemeConfig"}}},
+      "UpdatePaymentTheme": {"type": "object", "additionalProperties": false, "required": ["name", "config"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 120}, "config": {"$ref": "#/components/schemas/PaymentThemeConfig"}}},
+      "DuplicatePaymentTheme": {"type": "object", "additionalProperties": false, "properties": {"tenant_id": {"type": "string"}, "name": {"type": "string", "maxLength": 120}}},
+      "PaymentRedirect": {
+        "type": "object",
+        "properties": {"success_url": {"type": "string", "format": "uri"}, "cancel_url": {"type": "string", "format": "uri"}, "failed_url": {"type": "string", "format": "uri"}, "expired_url": {"type": "string", "format": "uri"}}
+      },
+      "PaymentSession": {
+        "type": "object", "required": ["session_id", "invoice_id", "status", "payment_status", "amount", "currency", "expires_at"],
+        "properties": {
+          "session_id": {"type": "string"}, "invoice_id": {"type": "string"},
+          "status": {"type": "string", "enum": ["payment_pending", "paid", "cancelled", "expired", "failed", "redirecting", "closed"]},
+          "payment_status": {"type": "string", "enum": ["creating", "pending", "paid", "expired", "failed"]},
+          "checkout_url": {"type": "string", "format": "uri"}, "amount": {"type": "integer", "format": "int64", "minimum": 1},
+          "currency": {"type": "string"}, "description": {"type": "string"}, "qr_payload": {"type": "string"},
+          "expires_at": {"type": "string", "format": "date-time"}, "server_now": {"type": "string", "format": "date-time", "description": "Server clock at snapshot generation for expiry countdown skew correction."}, "theme": {"$ref": "#/components/schemas/PaymentThemePublic"}, "redirect": {"$ref": "#/components/schemas/PaymentRedirect"}
+        }
+      },
+      "PaymentSessionConflict": {
+        "type": "object", "required": ["error", "session"],
+        "properties": {"error": {"type": "string"}, "session": {"$ref": "#/components/schemas/PaymentSession"}}
+      },
       "HealthCheck": {
         "type": "object",
         "required": ["id", "name", "kind", "status", "latency_ms", "last_checked_at", "message"],
@@ -317,7 +419,7 @@
       },
       "CreateTenant": {
         "type": "object", "additionalProperties": false, "required": ["name", "merchant_id"],
-        "properties": {"name": {"type": "string"}, "merchant_id": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri"}, "sandbox_mode": {"type": "boolean", "default": false, "description": "Allows authenticated browser requests from any valid Origin. Does not bypass API-key authentication."}, "use_unique_amount_code": {"type": "boolean", "default": false, "description": "Adds an available suffix from 1 through 99 to the QR payable amount so concurrent orders with the same requested amount can be matched safely."}}
+        "properties": {"name": {"type": "string"}, "merchant_id": {"type": "string"}, "site_url": {"type": "string", "format": "uri"}, "callback_url": {"type": "string", "format": "uri"}, "webhook_url": {"type": "string", "format": "uri", "description": "Server-to-server destination; production delivery requires HTTPS. The encrypted webhook secret is never returned."}, "sandbox_mode": {"type": "boolean", "default": false, "description": "Allows authenticated browser requests from any valid Origin. Does not bypass API-key authentication."}, "use_unique_amount_code": {"type": "boolean", "default": false, "description": "Adds an available suffix from 1 through 99 to the QR payable amount so concurrent orders with the same requested amount can be matched safely."}}
       },
       "CreateMerchantAccount": {
         "type": "object", "additionalProperties": false, "required": ["id", "tenant_id", "provider", "name", "credential"],
@@ -404,11 +506,11 @@
         }
       },
       "TenantQRISTransaction": {
-        "type": "object", "required": ["id", "idempotency_key", "qris_template_id", "merchant_id", "tenant_id", "amount", "requested_amount", "payable_amount", "unique_amount_code", "dynamic_payload", "unique_code", "status", "request_source", "match_confidence", "sandbox_mode", "created_at", "updated_at", "expires_at", "check_count", "qr_payload", "qr_png_base64", "status_url", "qr_url"],
+        "type": "object", "required": ["id", "idempotency_key", "qris_template_id", "merchant_id", "tenant_id", "amount", "requested_amount", "payable_amount", "unique_amount_code", "dynamic_payload", "unique_code", "status", "request_source", "match_confidence", "sandbox_mode", "created_at", "updated_at", "expires_at", "check_count", "status_url", "qr_url"],
         "properties": {
           "id": {"type": "string"}, "idempotency_key": {"type": "string"}, "qris_template_id": {"type": "string"}, "merchant_id": {"type": "string"}, "tenant_id": {"type": "string"},
           "amount": {"type": "integer", "format": "int64", "description": "Original amount requested by the tenant; retained for compatibility."}, "requested_amount": {"type": "integer", "format": "int64"}, "payable_amount": {"type": "integer", "format": "int64", "description": "Exact amount encoded in the QR and used for matching."}, "unique_amount_code": {"type": "integer", "minimum": 0, "maximum": 99}, "dynamic_payload": {"type": "string"}, "unique_code": {"type": "string"},
-          "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]}, "request_source": {"const": "tenant_api"}, "match_confidence": {"type": "string"}, "sandbox_mode": {"type": "boolean", "description": "Snapshot of the tenant mode when this QRIS transaction was created."},
+          "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed", "cancelled"]}, "request_source": {"const": "tenant_api"}, "match_confidence": {"type": "string"}, "sandbox_mode": {"type": "boolean", "description": "Snapshot of the tenant mode when this QRIS transaction was created."},
           "matched_transaction_id": {"type": "string"}, "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
           "last_checked_at": {"type": ["string", "null"], "format": "date-time"}, "next_check_at": {"type": ["string", "null"], "format": "date-time"}, "check_count": {"type": "integer", "minimum": 0},
           "qr_payload": {"type": "string"}, "qr_png_base64": {"type": "string", "contentEncoding": "base64"}, "status_url": {"type": "string"}, "qr_url": {"type": "string"}
@@ -418,7 +520,7 @@
         "type": "object", "required": ["id", "tenant_id", "merchant_id", "reference", "amount", "requested_amount", "payable_amount", "unique_amount_code", "status", "source", "request_source", "match_confidence", "created_at", "expires_at", "check_count"],
         "properties": {
           "id": {"type": "string"}, "tenant_id": {"type": "string"}, "merchant_id": {"type": "string"}, "reference": {"type": "string"}, "amount": {"type": "integer", "format": "int64"}, "requested_amount": {"type": "integer", "format": "int64"}, "payable_amount": {"type": "integer", "format": "int64"}, "unique_amount_code": {"type": "integer", "minimum": 0, "maximum": 99},
-          "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]}, "source": {"const": "tenant_qris"}, "request_source": {"const": "tenant_api"}, "match_confidence": {"type": "string"},
+          "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed", "cancelled"]}, "source": {"const": "tenant_qris"}, "request_source": {"const": "tenant_api"}, "match_confidence": {"type": "string"},
           "created_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"}, "last_checked_at": {"type": ["string", "null"], "format": "date-time"},
           "next_check_at": {"type": ["string", "null"], "format": "date-time"}, "check_count": {"type": "integer", "minimum": 0}, "matched_transaction_id": {"type": "string"}
         }
@@ -434,7 +536,7 @@
         "type": "object", "required": ["id", "qris_template_id", "merchant_id", "amount", "payable_amount", "unique_amount_code", "dynamic_payload", "status", "request_source", "match_confidence", "sandbox_mode", "created_at", "updated_at", "expires_at", "check_count"],
         "properties": {
           "id": {"type": "string"}, "idempotency_key": {"type": "string"}, "qris_template_id": {"type": "string"}, "merchant_id": {"type": "string"}, "tenant_id": {"type": "string"}, "amount": {"type": "integer", "format": "int64"}, "payable_amount": {"type": "integer", "format": "int64"}, "unique_amount_code": {"type": "integer", "minimum": 0, "maximum": 99},
-          "dynamic_payload": {"type": "string"}, "unique_code": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]},
+          "dynamic_payload": {"type": "string"}, "unique_code": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed", "cancelled"]},
           "request_source": {"type": "string"}, "match_confidence": {"type": "string"}, "matched_transaction_id": {"type": "string"}, "sandbox_mode": {"type": "boolean"},
           "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
           "last_checked_at": {"type": ["string", "null"], "format": "date-time"}, "check_count": {"type": "integer", "minimum": 0}
@@ -445,7 +547,7 @@
         "properties": {
           "id": {"type": "string"}, "event_type": {"type": "string", "enum": ["merchant_transaction", "qris_test_check"]},
           "merchant_id": {"type": "string"}, "tenant_id": {"type": "string"}, "reference": {"type": "string"}, "amount": {"type": "integer", "format": "int64"},
-          "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed"]}, "event_at": {"type": "string", "format": "date-time"},
+          "status": {"type": "string", "enum": ["pending", "paid", "expired", "failed", "cancelled"]}, "event_at": {"type": "string", "format": "date-time"},
           "source": {"type": "string"}, "request_source": {"type": "string"}, "validation": {"type": "string"},
           "expires_at": {"type": "string", "format": "date-time"}, "last_checked_at": {"type": "string", "format": "date-time"}, "next_check_at": {"type": "string", "format": "date-time"},
           "check_count": {"type": "integer", "minimum": 0}, "invoice_id": {"type": "string"}, "test_payment_id": {"type": "string"}, "matched_transaction_id": {"type": "string"}

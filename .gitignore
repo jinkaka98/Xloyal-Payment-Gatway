@@ -16,8 +16,12 @@ __pycache__/
 
 # Local agent state and captured request data
 .claude-flow/
+.codex-run/
+backend/.codex-run/
+backend/cmd/smokeqr/
 *.har
 camoufox-profiles/
+backend/.webwright-profiles/
 credentials*.txt
 
 # Editor and operating system files

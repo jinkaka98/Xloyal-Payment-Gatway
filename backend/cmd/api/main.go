@@ -38,11 +38,13 @@ func main() {
 	}
 	server := http.Server{
 		Addr:              addr,
-		Handler:           httpapi.Server{Repo: app.Repo, Gateway: app.Gateway, Cipher: app.Cipher, AdminTokens: tokens, ManualLogin: app.ManualLogin, WebhookSecret: os.Getenv("GITHUB_WEBHOOK_SECRET"), WebhookSignalPath: os.Getenv("GITHUB_WEBHOOK_SIGNAL_PATH")}.Handler(),
+		Handler:           httpapi.Server{Repo: app.Repo, Gateway: app.Gateway, Cipher: app.Cipher, AdminTokens: tokens, ManualLogin: app.ManualLogin, WebhookSecret: os.Getenv("GITHUB_WEBHOOK_SECRET"), WebhookSignalPath: os.Getenv("GITHUB_WEBHOOK_SIGNAL_PATH"), PublicPaymentBaseURL: os.Getenv("PUBLIC_PAYMENT_BASE_URL"), SSE: &httpapi.PaymentSSEHub{BufferSize: 16}}.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		// SSE payment event streams are long-lived; request/read timeouts still
+		// protect the API while writes remain open until the client disconnects.
+		WriteTimeout: 0,
+		IdleTimeout:  60 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

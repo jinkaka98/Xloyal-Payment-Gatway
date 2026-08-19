@@ -2,6 +2,8 @@
 .claude-flow
 .env
 backend/.webwright-profiles
+backend/.codex-run
+bahan/*.har
 backend/tools/Webwright-Clockbrowser
 web/.next*
 web/node_modules

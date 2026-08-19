@@ -100,6 +100,18 @@ describe("TenantConsole credentials and documentation", () => {
     expect(screen.getAllByText(/Idempotency-Key/).length).toBeGreaterThan(0);
   });
 
+  it("documents server-backed QRIS cancellation for tenant clients", () => {
+    render(<TenantConsole initialTenants={[tenant]} merchants={[]} qrisTemplates={templates} />);
+    fireEvent.click(screen.getByRole("button", { name: "Dokumentasi Alpakyros LITE" }));
+
+    expect(screen.getAllByText(/transactions\/qris\/\{transaction_id\}\/cancel/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Hentikan timer polling lokal sebelum mengirim cancel/)).toBeInTheDocument();
+    expect(screen.getByText(/HTTP 409 berarti transaksi sudah terminal/)).toHaveTextContent("source of truth");
+    expect(screen.getAllByText("cancelled").length).toBeGreaterThan(0);
+    expect(screen.getByText(/QR transaksi cancelled/)).toHaveTextContent("410 Gone");
+    expect(screen.getByText(/await qrisController.cancel/)).toBeInTheDocument();
+  });
+
   it("deletes a tenant after explicit confirmation", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
