@@ -7,12 +7,12 @@ import { StatusBadge } from "@/components/status-badge";
 import { formatDate } from "@/lib/format";
 import type { MerchantID, QRISTemplate, Tenant } from "@/lib/types";
 
-type TenantAPI = { id: string; merchant_id?: string; name: string; site_url?: string; callback_url?: string; webhook_url?: string; sandbox_mode: boolean; use_unique_amount_code?: boolean; unique_amount_cooldown_minutes?: number; active: boolean; api_key_recoverable?: boolean; created_at: string };
+type TenantAPI = { id: string; merchant_id?: string; name: string; site_url?: string; callback_url?: string; webhook_url?: string; sandbox_mode: boolean; use_unique_amount_code?: boolean; unique_amount_cooldown_minutes?: number; active: boolean; api_key_recoverable?: boolean; webhook_secret_configured?: boolean; created_at: string };
 type CreatedTenant = { tenant: TenantAPI; api_key: string; api_key_visible_once: boolean };
 type Modal = { kind: "create" } | { kind: "edit" | "docs"; tenant: Tenant } | null;
 
 function fromAPI(item: TenantAPI): Tenant {
-  return { id: item.id, name: item.name, merchantId: item.merchant_id ?? "", siteUrl: item.site_url ?? "", callbackUrl: item.callback_url ?? "", webhookUrl: item.webhook_url ?? "", sandboxMode: item.sandbox_mode, useUniqueAmountCode: item.use_unique_amount_code ?? false, uniqueAmountCooldownMinutes: item.unique_amount_cooldown_minutes ?? 30, active: item.active, apiKeyRecoverable: item.api_key_recoverable, createdAt: item.created_at };
+  return { id: item.id, name: item.name, merchantId: item.merchant_id ?? "", siteUrl: item.site_url ?? "", callbackUrl: item.callback_url ?? "", webhookUrl: item.webhook_url ?? "", sandboxMode: item.sandbox_mode, useUniqueAmountCode: item.use_unique_amount_code ?? false, uniqueAmountCooldownMinutes: item.unique_amount_cooldown_minutes ?? 30, active: item.active, apiKeyRecoverable: item.api_key_recoverable, webhookSecretConfigured: item.webhook_secret_configured, createdAt: item.created_at };
 }
 
 function tenantSiteOrigin(siteURL: string): string {
@@ -137,6 +137,7 @@ function TenantCredentials({ tenant, onCopy, copied, onRecovered }: { tenant: Te
   const [rotationRequired, setRotationRequired] = useState(tenant.apiKeyRecoverable === false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [webhookSecret, setWebhookSecret] = useState("");
 
   async function reveal() {
     if (apiKey) { setHidden((value) => !value); return; }
@@ -165,12 +166,28 @@ function TenantCredentials({ tenant, onCopy, copied, onRecovered }: { tenant: Te
     finally { setBusy(false); }
   }
 
+  async function rotateWebhookSecret() {
+    if (!window.confirm("Rotasi webhook secret akan langsung membatalkan secret lama. Simpan secret baru sebelum menutup dialog. Lanjutkan?")) return;
+    setBusy(true); setError(""); setWebhookSecret("");
+    try {
+      const response = await fetch(`/api/admin/tenants/${encodeURIComponent(tenant.id)}/webhook-secret/rotate`, { method: "POST" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || typeof payload.webhook_secret !== "string") throw new Error(payload.error ?? `Webhook secret gagal dibuat (${response.status}).`);
+      setWebhookSecret(payload.webhook_secret);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Webhook secret gagal dibuat."); }
+    finally { setBusy(false); }
+  }
+
   return <section className="tenant-credentials" aria-label="Kredensial Tenant API">
     <label>Tenant ID<div className="credential-field"><code>{tenant.id}</code><button type="button" className="icon-button" aria-label="Salin Tenant ID" title="Salin Tenant ID" onClick={() => onCopy(tenant.id, "id")}>{copied === "id" ? <Check size={16} /> : <Copy size={16} />}</button></div></label>
     <label>API key<div className="credential-field credential-field-actions"><code>{hidden || !apiKey ? "xl_live_••••••••••••••••" : apiKey}</code><span>
       <button type="button" className="icon-button" aria-label={apiKey && !hidden ? "Sembunyikan API key" : "Lihat API key"} title={apiKey && !hidden ? "Sembunyikan API key" : "Lihat API key"} disabled={busy} onClick={reveal}>{apiKey && !hidden ? <EyeOff size={16} /> : <Eye size={16} />}</button>
       <button type="button" className="icon-button" aria-label="Salin API key" title="Salin API key" disabled={!apiKey || hidden} onClick={() => onCopy(apiKey, "key")}>{copied === "key" ? <Check size={16} /> : <Copy size={16} />}</button>
     </span></div></label>
+    <label>Webhook secret<div className="credential-field credential-field-actions"><code>{webhookSecret || "whsec_••••••••••••••••"}</code><span>
+      {webhookSecret && <button type="button" className="icon-button" aria-label="Salin webhook secret" title="Salin webhook secret" onClick={() => navigator.clipboard.writeText(webhookSecret)}><Copy size={16} /></button>}
+      <button type="button" className="button button-compact" aria-label={tenant.webhookSecretConfigured ? "Rotasi webhook secret" : "Buat webhook secret"} disabled={busy} onClick={rotateWebhookSecret}><RefreshCw size={15} />{busy ? "Memproses..." : tenant.webhookSecretConfigured ? "Rotasi" : "Buat secret"}</button>
+    </span></div><span className="cell-subtitle">{webhookSecret ? "Tampilkan sekali. Simpan di aplikasi tenant sebelum menutup dialog." : tenant.webhookSecretConfigured ? "Secret sudah tersimpan terenkripsi; nilai lama tidak dapat dibaca kembali." : "Belum dikonfigurasi. Webhook belum dapat diverifikasi."}</span></label>
     {rotationRequired && <div className="tenant-key-rotation"><p>Key lama hanya tersimpan sebagai hash dan perlu dirotasi satu kali agar dapat dilihat kembali.</p><button type="button" className="button" aria-label="Rotasi API key" disabled={busy} onClick={rotate}><RefreshCw size={15} />{busy ? "Merotasi..." : "Rotasi API key"}</button></div>}
     {error && <p className="form-error">{error}</p>}
   </section>;
@@ -197,6 +214,7 @@ function TenantDocumentation({ tenant, qrisTemplates }: { tenant: Tenant; qrisTe
     </div>
     <div className="tenant-api-routes"><KeyRound size={17} /><div><strong>Autentikasi Alpakyros LITE</strong><code>Tenant ID: {id}</code><code>X-API-Key: YOUR_API_KEY</code><p>Kirim key hanya ke <code>{apiBase}</code>. Portal merchant dan browser worker tetap berada di jaringan internal gateway.</p></div></div>
     <p>Gunakan header <code>X-API-Key: YOUR_API_KEY</code> pada setiap request. Tenant ID aktif untuk integrasi ini adalah <code>{id}</code>; API key dapat dilihat atau dirotasi oleh super admin dari tombol edit tenant.</p>
+    <div className="tenant-doc-endpoint"><strong>Webhook signature</strong><p>Webhook URL hanya aktif setelah super admin membuat webhook secret dari edit Tenant ID. Secret ditampilkan satu kali saat dibuat/dirotasi dan disimpan tenant secara aman. Gunakan secret untuk memverifikasi signature HMAC webhook; jangan menaruhnya di browser atau mengirimkannya kembali ke API.</p><code>X-Xloyal-Signature: sha256=...</code><p>Rotasi langsung membatalkan secret lama. Selama secret belum dikonfigurasi, gunakan polling status sebagai sumber kebenaran.</p></div>
     <div className="tenant-api-routes"><Server size={17} /><div><strong>Mode browser: {tenant.sandboxMode ? "Sandbox" : "Production"}</strong><p>{tenant.sandboxMode ? "Request browser boleh berasal dari origin mana pun, tetapi API key tetap wajib dan tetap diverifikasi." : <>Request browser hanya diterima dari origin <code>{tenantSiteOrigin(tenant.siteUrl)}</code>. Request server-to-server tanpa header Origin tetap diterima.</>}</p></div></div>
     <div className="tenant-doc-endpoint"><strong><span>GET</span>Daftar template QRIS tersedia</strong><code>{apiBase}/v1/tenants/{id}/qris/templates</code><pre>{`curl '${apiBase}/v1/tenants/${id}/qris/templates' \\\n  -H 'X-API-Key: YOUR_API_KEY'`}</pre><p>Ambil nilai <code>id</code> dari respons ini. Endpoint hanya mengembalikan template aktif yang boleh digunakan Tenant ID ini untuk QRIS dinamis.</p>{availableTemplates.length > 0 ? <ul className="tenant-doc-template-list">{availableTemplates.map((template) => <li key={template.id}><strong>{template.name}</strong><code>{template.id}</code><span>{qrisTemplateScope(template) === "all_tenants" ? "Shared" : "Tenant khusus"} · {template.merchant_name || "Merchant QRIS"}</span></li>)}</ul> : <p>Belum ada template QRIS aktif untuk tenant ini. Atur aksesnya dari QRIS Control.</p>}</div>
     <div className="tenant-doc-endpoint"><strong><span>POST</span>Buat transaksi QRIS dinamis</strong><code>{apiBase}/v1/tenants/{id}/transactions/qris</code><pre>{`curl -X POST '${apiBase}/v1/tenants/${id}/transactions/qris' \\\n  -H 'Content-Type: application/json' \\\n  -H 'X-API-Key: YOUR_API_KEY' \\\n  -d '{"template_id":"${exampleTemplateID}","amount":50000,"idempotency_key":"ORDER_UNIQUE_ID"}'`}</pre><p>Respons menyertakan ID transaksi, payload QRIS, PNG base64, URL status, URL QR, status pending, dan waktu kedaluwarsa. Gunakan idempotency key unik per order.</p><div className="tenant-api-routes"><div><strong>Kode unik nominal: {tenant.useUniqueAmountCode ? "Aktif" : "Nonaktif"}</strong><code>requested_amount: Rp10.000 - nominal awal dari request</code><code>payable_amount: Rp10.037 - nominal yang harus dibayar</code><code>unique_amount_code: 37 - kode unik yang ditambahkan</code><p>Jika fitur aktif, request Rp10.000 dapat menghasilkan payable amount Rp10.037. Bayar tepat Rp10.037 dan gunakan <code>payable_amount</code> untuk tampilan serta instruksi pembayaran.</p></div></div><code>{`const imageSrc = "data:image/png;base64," + response.qr_png_base64;`}</code><p>Tampilkan <code>imageSrc</code> sebagai sumber gambar QR di frontend. Simpan API key dan pemanggilan gateway di backend aplikasi tenant, bukan di JavaScript browser.</p></div>

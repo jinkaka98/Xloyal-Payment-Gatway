@@ -71,6 +71,7 @@ func (s Server) Handler() http.Handler {
 	m.HandleFunc("DELETE /admin/tenants/{id}", s.admin("super_admin", s.deleteTenant))
 	m.HandleFunc("GET /admin/tenants/{id}/credentials", s.admin("super_admin", s.revealTenantCredential))
 	m.HandleFunc("POST /admin/tenants/{id}/credentials/rotate", s.admin("super_admin", s.rotateTenantCredential))
+	m.HandleFunc("POST /admin/tenants/{id}/webhook-secret/rotate", s.admin("super_admin", s.rotateTenantWebhookSecret))
 	m.HandleFunc("GET /admin/merchant-ids", s.admin("viewer", s.listMerchantIDs))
 	m.HandleFunc("POST /admin/merchant-ids", s.admin("operator", s.createMerchantID))
 	m.HandleFunc("GET /admin/merchant-ids/{id}/connection", s.admin("viewer", s.getMerchantConnection))
@@ -1572,6 +1573,23 @@ func (s Server) rotateTenantCredential(w http.ResponseWriter, r *http.Request, _
 		return
 	}
 	write(w, http.StatusOK, map[string]any{"tenant_id": tenant.ID, "api_key": apiKey, "rotated_at": rotatedAt})
+}
+
+func (s Server) rotateTenantWebhookSecret(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
+	tenant, err := s.Repo.Tenant(r.Context(), r.PathValue("id"))
+	if err != nil { notFound(w, err); return }
+	if s.Cipher == nil { problem(w, http.StatusInternalServerError, "tenant credential encryption is not configured"); return }
+	secret, err := security.GenerateWebhookSecret()
+	if err != nil { problem(w, http.StatusInternalServerError, "webhook secret generation failed"); return }
+	ciphertext, err := s.Cipher.Encrypt([]byte(secret))
+	if err != nil { problem(w, http.StatusInternalServerError, "webhook secret encryption failed"); return }
+	now := time.Now().UTC()
+	audit := domain.AuditEvent{ID: newID(), Actor: "admin", Action: "tenant.webhook_secret_rotated", ResourceType: "tenant", ResourceID: tenant.ID, TenantID: tenant.ID, CreatedAt: now}
+	if err := s.Repo.RotateTenantWebhookSecret(r.Context(), tenant.ID, ciphertext, audit); err != nil {
+		if errors.Is(err, store.ErrNotFound) { problem(w, http.StatusNotFound, "not found"); return }
+		problem(w, http.StatusInternalServerError, "rotate webhook secret failed"); return
+	}
+	write(w, http.StatusOK, map[string]any{"tenant_id": tenant.ID, "webhook_secret": secret, "rotated_at": now, "visible_once": true})
 }
 func (s Server) listMerchants(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
 	v, err := s.Repo.ListMerchantAccounts(r.Context(), r.URL.Query().Get("tenant_id"))

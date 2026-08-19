@@ -26,6 +26,15 @@ func GeneratePublicPaymentToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
+// GenerateWebhookSecret returns a URL-safe secret for tenant webhook signing.
+func GenerateWebhookSecret() (string, error) {
+	b := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		return "", err
+	}
+	return "whsec_" + base64.RawURLEncoding.EncodeToString(b), nil
+}
+
 func HashPublicPaymentToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return base64.RawURLEncoding.EncodeToString(sum[:])

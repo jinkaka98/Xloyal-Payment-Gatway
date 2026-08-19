@@ -25,6 +25,7 @@ type Repository interface {
 	UpdateTenant(context.Context, domain.Tenant) error
 	DeleteTenant(context.Context, string, domain.AuditEvent) error
 	RotateTenantAPIKey(context.Context, string, string, string, string, domain.AuditEvent) error
+	RotateTenantWebhookSecret(context.Context, string, string, domain.AuditEvent) error
 	ListTenants(context.Context) ([]domain.Tenant, error)
 	AssignTenantMerchant(context.Context, string, string) error
 	CreateMerchantID(context.Context, domain.MerchantID) error
@@ -424,6 +425,7 @@ func (m *Memory) TenantByAPIKey(_ context.Context, hash string) (domain.Tenant, 
 	for _, v := range m.tenants {
 		if v.APIKeyHash == hash && v.Active {
 			v.APIKeyRecoverable = v.APIKeyCiphertext != ""
+			v.WebhookSecretConfigured = v.WebhookSecretCiphertext != ""
 			return v, nil
 		}
 	}
@@ -437,6 +439,7 @@ func (m *Memory) Tenant(_ context.Context, id string) (domain.Tenant, error) {
 		return domain.Tenant{}, ErrNotFound
 	}
 	v.APIKeyRecoverable = v.APIKeyCiphertext != ""
+	v.WebhookSecretConfigured = v.WebhookSecretCiphertext != ""
 	return v, nil
 }
 func (m *Memory) CreateTenant(_ context.Context, v domain.Tenant) error {
@@ -462,6 +465,7 @@ func (m *Memory) UpdateTenant(_ context.Context, v domain.Tenant) error {
 	v.APIKeyCiphertext = current.APIKeyCiphertext
 	v.WebhookSecretCiphertext = current.WebhookSecretCiphertext
 	v.APIKeyRecoverable = current.APIKeyCiphertext != ""
+	v.WebhookSecretConfigured = current.WebhookSecretCiphertext != ""
 	if v.UniqueAmountCooldownMinutes == 0 {
 		v.UniqueAmountCooldownMinutes = current.UniqueAmountCooldownMinutes
 	}
@@ -494,6 +498,17 @@ func (m *Memory) RotateTenantAPIKey(_ context.Context, tenantID, expectedHash, h
 	v.APIKeyHash = hash
 	v.APIKeyCiphertext = ciphertext
 	v.APIKeyRecoverable = ciphertext != ""
+	v.WebhookSecretConfigured = v.WebhookSecretCiphertext != ""
+	m.tenants[tenantID] = v
+	m.audits = append(m.audits, audit)
+	return nil
+}
+func (m *Memory) RotateTenantWebhookSecret(_ context.Context, tenantID, ciphertext string, audit domain.AuditEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.tenants[tenantID]
+	if !ok { return ErrNotFound }
+	v.WebhookSecretCiphertext = ciphertext
 	m.tenants[tenantID] = v
 	m.audits = append(m.audits, audit)
 	return nil
@@ -504,6 +519,7 @@ func (m *Memory) ListTenants(context.Context) ([]domain.Tenant, error) {
 	r := make([]domain.Tenant, 0, len(m.tenants))
 	for _, v := range m.tenants {
 		v.APIKeyRecoverable = v.APIKeyCiphertext != ""
+		v.WebhookSecretConfigured = v.WebhookSecretCiphertext != ""
 		r = append(r, v)
 	}
 	return r, nil

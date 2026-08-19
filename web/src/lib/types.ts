@@ -15,6 +15,7 @@ export interface Tenant {
   uniqueAmountCooldownMinutes?: number;
   active: boolean;
   apiKeyRecoverable?: boolean | undefined;
+  webhookSecretConfigured?: boolean | undefined;
   createdAt: string;
 }
 

@@ -278,6 +278,7 @@ type Tenant struct {
 	APIKeyHash                  string    `json:"-"`
 	APIKeyCiphertext            string    `json:"-"`
 	WebhookSecretCiphertext     string    `json:"-"`
+	WebhookSecretConfigured     bool      `json:"webhook_secret_configured"`
 	WebhookReplayWindowSeconds  int       `json:"webhook_replay_window_seconds"`
 	APIKeyRecoverable           bool      `json:"api_key_recoverable"`
 	Active                      bool      `json:"active"`

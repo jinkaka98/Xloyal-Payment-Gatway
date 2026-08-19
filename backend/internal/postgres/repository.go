@@ -24,12 +24,14 @@ func (r *Repository) TenantByAPIKey(ctx context.Context, h string) (domain.Tenan
 	var v domain.Tenant
 	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),sandbox_mode,use_unique_amount_code,unique_amount_cooldown_minutes,api_key_hash,COALESCE(api_key_ciphertext,''),COALESCE(webhook_secret_ciphertext,''),webhook_replay_window_seconds,active,created_at FROM tenants WHERE api_key_hash=$1 AND active=true AND deleted_at IS NULL`, h).Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.SandboxMode, &v.UseUniqueAmountCode, &v.UniqueAmountCooldownMinutes, &v.APIKeyHash, &v.APIKeyCiphertext, &v.WebhookSecretCiphertext, &v.WebhookReplayWindowSeconds, &v.Active, &v.CreatedAt)
 	v.APIKeyRecoverable = v.APIKeyCiphertext != ""
+	v.WebhookSecretConfigured = v.WebhookSecretCiphertext != ""
 	return v, notFound(err)
 }
 func (r *Repository) Tenant(ctx context.Context, id string) (domain.Tenant, error) {
 	var v domain.Tenant
 	err := r.DB.QueryRowContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),sandbox_mode,use_unique_amount_code,unique_amount_cooldown_minutes,api_key_hash,COALESCE(api_key_ciphertext,''),COALESCE(webhook_secret_ciphertext,''),webhook_replay_window_seconds,active,created_at FROM tenants WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&v.ID, &v.MerchantID, &v.Name, &v.SiteURL, &v.CallbackURL, &v.WebhookURL, &v.SandboxMode, &v.UseUniqueAmountCode, &v.UniqueAmountCooldownMinutes, &v.APIKeyHash, &v.APIKeyCiphertext, &v.WebhookSecretCiphertext, &v.WebhookReplayWindowSeconds, &v.Active, &v.CreatedAt)
 	v.APIKeyRecoverable = v.APIKeyCiphertext != ""
+	v.WebhookSecretConfigured = v.WebhookSecretCiphertext != ""
 	return v, notFound(err)
 }
 func (r *Repository) CreateTenant(ctx context.Context, v domain.Tenant) error {
@@ -114,6 +116,21 @@ func (r *Repository) RotateTenantAPIKey(ctx context.Context, tenantID, expectedH
 	}
 	return tx.Commit()
 }
+
+func (r *Repository) RotateTenantWebhookSecret(ctx context.Context, tenantID, ciphertext string, audit domain.AuditEvent) error {
+	tx, err := r.DB.BeginTx(ctx, nil)
+	if err != nil { return err }
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE tenants SET webhook_secret_ciphertext=$1 WHERE id=$2 AND deleted_at IS NULL`, ciphertext, tenantID)
+	if err != nil { return err }
+	n, err := res.RowsAffected()
+	if err != nil { return err }
+	if n == 0 { return store.ErrNotFound }
+	meta, err := json.Marshal(audit.Metadata)
+	if err != nil { return err }
+	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(id,tenant_id,actor,action,resource_type,resource_id,metadata,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, audit.ID, null(audit.TenantID), audit.Actor, audit.Action, audit.ResourceType, audit.ResourceID, meta, audit.CreatedAt); err != nil { return err }
+	return tx.Commit()
+}
 func (r *Repository) ListTenants(ctx context.Context) ([]domain.Tenant, error) {
 	rows, err := r.DB.QueryContext(ctx, `SELECT id,COALESCE(merchant_id,''),name,COALESCE(site_url,''),COALESCE(callback_url,''),COALESCE(webhook_url,''),sandbox_mode,use_unique_amount_code,unique_amount_cooldown_minutes,api_key_hash,COALESCE(api_key_ciphertext,''),COALESCE(webhook_secret_ciphertext,''),webhook_replay_window_seconds,active,created_at FROM tenants WHERE deleted_at IS NULL ORDER BY created_at DESC`)
 	if err != nil {
@@ -127,6 +144,7 @@ func (r *Repository) ListTenants(ctx context.Context) ([]domain.Tenant, error) {
 			return nil, err
 		}
 		v.APIKeyRecoverable = v.APIKeyCiphertext != ""
+		v.WebhookSecretConfigured = v.WebhookSecretCiphertext != ""
 		out = append(out, v)
 	}
 	return out, rows.Err()
