@@ -138,6 +138,7 @@ function TenantCredentials({ tenant, onCopy, copied, onRecovered }: { tenant: Te
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [webhookSecret, setWebhookSecret] = useState("");
+  const [webhookConfigured, setWebhookConfigured] = useState(tenant.webhookSecretConfigured === true);
 
   async function reveal() {
     if (apiKey) { setHidden((value) => !value); return; }
@@ -174,6 +175,7 @@ function TenantCredentials({ tenant, onCopy, copied, onRecovered }: { tenant: Te
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || typeof payload.webhook_secret !== "string") throw new Error(payload.error ?? `Webhook secret gagal dibuat (${response.status}).`);
       setWebhookSecret(payload.webhook_secret);
+      setWebhookConfigured(true);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Webhook secret gagal dibuat."); }
     finally { setBusy(false); }
   }
@@ -186,8 +188,8 @@ function TenantCredentials({ tenant, onCopy, copied, onRecovered }: { tenant: Te
     </span></div></label>
     <label>Webhook secret<div className="credential-field credential-field-actions"><code>{webhookSecret || "whsec_••••••••••••••••"}</code><span>
       {webhookSecret && <button type="button" className="icon-button" aria-label="Salin webhook secret" title="Salin webhook secret" onClick={() => navigator.clipboard.writeText(webhookSecret)}><Copy size={16} /></button>}
-      <button type="button" className="button button-compact" aria-label={tenant.webhookSecretConfigured ? "Rotasi webhook secret" : "Buat webhook secret"} disabled={busy} onClick={rotateWebhookSecret}><RefreshCw size={15} />{busy ? "Memproses..." : tenant.webhookSecretConfigured ? "Rotasi" : "Buat secret"}</button>
-    </span></div><span className="cell-subtitle">{webhookSecret ? "Tampilkan sekali. Simpan di aplikasi tenant sebelum menutup dialog." : tenant.webhookSecretConfigured ? "Secret sudah tersimpan terenkripsi; nilai lama tidak dapat dibaca kembali." : "Belum dikonfigurasi. Webhook belum dapat diverifikasi."}</span></label>
+      <button type="button" className="button button-compact" aria-label={webhookConfigured ? "Rotasi webhook secret" : "Buat webhook secret"} disabled={busy} onClick={rotateWebhookSecret}><RefreshCw size={15} />{busy ? "Memproses..." : webhookConfigured ? "Rotasi" : "Buat secret"}</button>
+    </span></div><span className="cell-subtitle">{webhookSecret ? "Tampilkan sekali. Simpan di aplikasi tenant sebelum menutup dialog." : webhookConfigured ? "Secret sudah tersimpan terenkripsi; nilai lama tidak dapat dibaca kembali." : "Belum dikonfigurasi. Webhook belum dapat diverifikasi."}</span></label>
     {rotationRequired && <div className="tenant-key-rotation"><p>Key lama hanya tersimpan sebagai hash dan perlu dirotasi satu kali agar dapat dilihat kembali.</p><button type="button" className="button" aria-label="Rotasi API key" disabled={busy} onClick={rotate}><RefreshCw size={15} />{busy ? "Merotasi..." : "Rotasi API key"}</button></div>}
     {error && <p className="form-error">{error}</p>}
   </section>;

@@ -303,7 +303,7 @@ The implementation is accepted only when it proves:
 
 1. Confirm whether session creation accepts only `pending` invoices or also a provider-creation `creating` phase.
 2. Confirm the public identifier semantics for `payment_id` versus the existing `invoice_id`.
-3. Confirm the source and rotation model for tenant webhook secrets; the current repository stores only `webhook_url`.
+3. Tenant webhook secrets are generated and rotated by a super admin from Tenant ID edit. The encrypted ciphertext is stored server-side and the plaintext is returned only once from `POST /admin/tenants/{id}/webhook-secret/rotate`; ordinary tenant responses never expose it.
 4. Confirm the webhook replay window, retry schedule, and maximum delivery attempts.
 5. Confirm the final theme JSON schema, maximum size, and safe asset URL policy.
 6. Confirm whether strict per-payment event ordering requires a persisted sequence number.
