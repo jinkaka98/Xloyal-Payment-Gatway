@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
@@ -1242,6 +1243,7 @@ func (s Server) cancelPaymentSession(w http.ResponseWriter, r *http.Request) {
 			write(w, http.StatusConflict, paymentSessionConflictResponse{Error: "payment session is already terminal", Session: s.publicPaymentSessionResponse(snapshot)})
 			return
 		}
+		slog.Error("payment session cancellation failed", "error", err)
 		paymentSessionProblem(w, http.StatusInternalServerError, "internal_error", "payment session cancellation failed")
 		return
 	}
