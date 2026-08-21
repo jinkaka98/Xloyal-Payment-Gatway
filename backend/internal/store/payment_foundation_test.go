@@ -133,6 +133,7 @@ func TestTerminalPaymentSessionTransitionUpdatesInvoiceAtomically(t *testing.T) 
 	now := time.Now().UTC()
 	repo := NewMemory()
 	repo.invoices["inv"] = domain.Invoice{ID: "inv", TenantID: "tenant", Status: domain.InvoicePending, ExpiresAt: now.Add(time.Hour)}
+	repo.hostedAmountReservations["merchant\x001036"] = uniqueAmountReservation{PaymentID: "inv", TenantID: "tenant", MerchantID: "merchant", PayableAmount: 1036, Code: 36, CooldownMinutes: 30, State: "active", ReservedAt: now}
 	repo.paymentSessions["session"] = domain.PaymentSession{ID: "session", TenantID: "tenant", InvoiceID: "inv", Status: domain.PaymentSessionPaymentPending}
 	_, err := repo.TransitionPaymentSession(ctx, "tenant", "session", domain.PaymentSessionPaid, now, domain.PaymentEvent{ID: "paid-row", EventID: "paid-event", PaymentSessionID: "session", EventType: domain.PaymentEventPaid}, domain.OutboxEvent{ID: "paid-outbox", EventID: "paid-event"})
 	if err != nil {
@@ -140,6 +141,10 @@ func TestTerminalPaymentSessionTransitionUpdatesInvoiceAtomically(t *testing.T) 
 	}
 	if repo.invoices["inv"].Status != domain.InvoicePaid {
 		t.Fatal("invoice and session terminal state did not commit together")
+	}
+	reservation := repo.hostedAmountReservations["merchant\x001036"]
+	if reservation.State != "cooldown" || reservation.TerminalStatus != string(domain.InvoicePaid) || !reservation.CooldownUntil.Equal(now.Add(30*time.Minute)) {
+		t.Fatalf("hosted unique amount was not cooled down: %+v", reservation)
 	}
 	repo.invoices["inv2"] = domain.Invoice{ID: "inv2", TenantID: "tenant", Status: domain.InvoiceExpired, ExpiresAt: now.Add(time.Hour)}
 	repo.paymentSessions["session2"] = domain.PaymentSession{ID: "session2", TenantID: "tenant", InvoiceID: "inv2", Status: domain.PaymentSessionPaymentPending}

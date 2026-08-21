@@ -153,6 +153,7 @@ func (m *Memory) TransitionPaymentSession(_ context.Context, tenantID, id string
 		}
 		invoice.Status, invoice.UpdatedAt = invoiceStatus, now
 		m.invoices[v.InvoiceID] = invoice
+		m.cooldownHostedInvoiceLocked(v.InvoiceID, invoiceStatus, now)
 	}
 	if event.SequenceNumber == 0 {
 		event.SequenceNumber = 1
@@ -167,6 +168,19 @@ func (m *Memory) TransitionPaymentSession(_ context.Context, tenantID, id string
 	m.paymentEvents = append(m.paymentEvents, event)
 	m.outboxEvents[outbox.ID] = outbox
 	return v, nil
+}
+
+func (m *Memory) cooldownHostedInvoiceLocked(invoiceID string, status domain.InvoiceStatus, now time.Time) {
+	for key, reservation := range m.hostedAmountReservations {
+		if reservation.PaymentID != invoiceID || reservation.State == "cooldown" {
+			continue
+		}
+		reservation.State = "cooldown"
+		reservation.TerminalStatus = string(status)
+		reservation.TerminalAt = now
+		reservation.CooldownUntil = now.Add(time.Duration(reservation.CooldownMinutes) * time.Minute)
+		m.hostedAmountReservations[key] = reservation
+	}
 }
 
 func (m *Memory) ClaimOutboxEvents(_ context.Context, owner string, now time.Time, lease time.Duration, limit int) ([]domain.OutboxEvent, error) {

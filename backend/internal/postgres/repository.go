@@ -502,12 +502,26 @@ func (r *Repository) UpdatePendingInvoice(ctx context.Context, v domain.Invoice)
 	return n == 1, err
 }
 func (r *Repository) CancelPendingInvoice(ctx context.Context, v domain.Invoice) (bool, error) {
-	res, err := r.DB.ExecContext(ctx, `UPDATE invoices SET status='cancelled',updated_at=$1,last_checked_at=NULL WHERE id=$2 AND tenant_id=$3 AND status='pending'`, v.UpdatedAt, v.ID, v.TenantID)
+	tx, err := r.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE invoices SET status='cancelled',updated_at=$1,last_checked_at=NULL WHERE id=$2 AND tenant_id=$3 AND status='pending'`, v.UpdatedAt, v.ID, v.TenantID)
 	if err != nil {
 		return false, err
 	}
 	n, err := res.RowsAffected()
-	return n == 1, err
+	if err != nil || n != 1 {
+		return n == 1, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE hosted_invoice_unique_amount_reservations SET state='cooldown',terminal_status='cancelled',terminal_at=$1,cooldown_until=$1 + (cooldown_minutes * INTERVAL '1 minute') WHERE invoice_id=$2 AND unique_amount_code > 0 AND state='active'`, v.UpdatedAt, v.ID); err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 func (r *Repository) PendingInvoices(ctx context.Context, due time.Time, limit int) ([]domain.Invoice, error) {
 	rows, err := r.DB.QueryContext(ctx, invoiceColumns+` WHERE status='pending' AND (last_checked_at IS NULL OR last_checked_at <= $1) ORDER BY created_at LIMIT $2`, due, limit)
