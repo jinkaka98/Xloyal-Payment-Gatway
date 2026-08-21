@@ -497,7 +497,7 @@ func (r *Repository) UpdatePendingInvoice(ctx context.Context, v domain.Invoice)
 	}
 	n, err := res.RowsAffected()
 	if n == 1 && v.Status != domain.InvoicePending {
-		_, err = r.DB.ExecContext(ctx, `UPDATE hosted_invoice_unique_amount_reservations SET state='cooldown',terminal_status=$1,terminal_at=$2,cooldown_until=$2 + (cooldown_minutes * INTERVAL '1 minute') WHERE invoice_id=$3 AND unique_amount_code > 0`, v.Status, v.UpdatedAt, v.ID)
+		_, err = r.DB.ExecContext(ctx, `UPDATE hosted_invoice_unique_amount_reservations SET state='cooldown',terminal_status=$1,terminal_at=$2,cooldown_until=$2::timestamptz + (cooldown_minutes * INTERVAL '1 minute') WHERE invoice_id=$3 AND unique_amount_code > 0`, v.Status, v.UpdatedAt, v.ID)
 	}
 	return n == 1, err
 }
@@ -515,7 +515,7 @@ func (r *Repository) CancelPendingInvoice(ctx context.Context, v domain.Invoice)
 	if err != nil || n != 1 {
 		return n == 1, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE hosted_invoice_unique_amount_reservations SET state='cooldown',terminal_status='cancelled',terminal_at=$1,cooldown_until=$1 + (cooldown_minutes * INTERVAL '1 minute') WHERE invoice_id=$2 AND unique_amount_code > 0 AND state='active'`, v.UpdatedAt, v.ID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE hosted_invoice_unique_amount_reservations SET state='cooldown',terminal_status='cancelled',terminal_at=$1,cooldown_until=$1::timestamptz + (cooldown_minutes * INTERVAL '1 minute') WHERE invoice_id=$2 AND unique_amount_code > 0 AND state='active'`, v.UpdatedAt, v.ID); err != nil {
 		return false, err
 	}
 	if err = tx.Commit(); err != nil {

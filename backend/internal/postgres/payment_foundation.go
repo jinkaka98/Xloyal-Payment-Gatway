@@ -146,7 +146,7 @@ func (r *Repository) TransitionPaymentSession(ctx context.Context, tenantID, id 
 				return v, store.ErrConflict
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE hosted_invoice_unique_amount_reservations SET state='cooldown',terminal_status=$1,terminal_at=$2,cooldown_until=$2 + (cooldown_minutes * INTERVAL '1 minute') WHERE invoice_id=$3 AND unique_amount_code > 0 AND state='active'`, invoiceStatus, now, v.InvoiceID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE hosted_invoice_unique_amount_reservations SET state='cooldown',terminal_status=$1,terminal_at=$2,cooldown_until=$2::timestamptz + (cooldown_minutes * INTERVAL '1 minute') WHERE invoice_id=$3 AND unique_amount_code > 0 AND state='active'`, invoiceStatus, now, v.InvoiceID); err != nil {
 			return v, err
 		}
 	}
