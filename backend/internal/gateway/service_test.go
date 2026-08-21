@@ -3,12 +3,15 @@ package gateway
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 	"xloyal/backend/internal/domain"
 	"xloyal/backend/internal/store"
 )
+
+const xloyalStaticQRISFixture = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5915XLOYAL MERCHANT6014BANDAR LAMPUNG610565164630448AD"
 
 type fakeProvider struct {
 	creates, checks int
@@ -65,6 +68,126 @@ func TestCreateRejectsIdempotencyConflictAndNonIDR(t *testing.T) {
 	changed.Currency = "USD"
 	if _, _, err := s.CreateInvoice(context.Background(), changed); err == nil {
 		t.Fatal("non-IDR invoice accepted")
+	}
+}
+
+func TestCreateSandboxInvoiceUsesStoredQRISTemplate(t *testing.T) {
+	s, repo, provider := setup(t)
+	ctx := context.Background()
+	repo.CreateTenant(ctx, domain.Tenant{ID: "t1", MerchantID: "merchant-xloyal", UseUniqueAmountCode: true, UniqueAmountCooldownMinutes: 45, Active: true})
+	s.UniqueAmountCodeOrder = func() ([]int64, error) { return []int64{1}, nil }
+	createdAt := s.now().Add(-time.Hour)
+	if err := repo.CreateQRISTemplate(ctx, domain.QRISTemplate{
+		ID: "7ac58e464854be519b5a7e6d7a1f4519", Name: "Xloyal Merchant",
+		StaticPayload: xloyalStaticQRISFixture, MerchantName: "XLOYAL MERCHANT",
+		MerchantCity: "BANDAR LAMPUNG", AccessScope: "all_tenants",
+		StaticToDynamic: true, Active: true, CreatedAt: createdAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	invoice, created, err := s.CreateInvoice(ctx, CreateInvoiceInput{
+		TenantID: "t1", MerchantAccountID: "m1", IdempotencyKey: "sandbox-stored-qris",
+		Amount: 1000, SandboxMode: true,
+	})
+	if err != nil || !created {
+		t.Fatalf("create sandbox invoice: created=%v err=%v", created, err)
+	}
+	if provider.creates != 0 {
+		t.Fatalf("provider creates=%d, want 0", provider.creates)
+	}
+	if invoice.Status != domain.InvoicePending || !strings.HasPrefix(invoice.QRPayload, "000201010212") {
+		t.Fatalf("invoice status=%s payload=%q", invoice.Status, invoice.QRPayload)
+	}
+	if invoice.RequestedAmount != 1000 || invoice.Amount != 1001 || invoice.UniqueAmountCode != 1 {
+		t.Fatalf("hosted unique amount not applied: %+v", invoice)
+	}
+	if invoice.QRISTemplateID != "7ac58e464854be519b5a7e6d7a1f4519" || invoice.QRISMerchantName != "XLOYAL MERCHANT" || invoice.QRISMerchantCity != "BANDAR LAMPUNG" {
+		t.Fatalf("hosted merchant metadata missing: %+v", invoice)
+	}
+	if !strings.Contains(invoice.QRPayload, "54041001") {
+		t.Fatalf("sandbox QR does not contain payable amount 1001: %q", invoice.QRPayload)
+	}
+	if !strings.Contains(invoice.QRPayload, "XLOYAL MERCHANT") || !strings.Contains(invoice.QRPayload, "BANDAR LAMPUNG") {
+		t.Fatalf("sandbox QR does not use stored Xloyal template: %q", invoice.QRPayload)
+	}
+}
+
+func TestCreateSandboxInvoiceWithoutUniqueAmountKeepsRequestedAmount(t *testing.T) {
+	s, repo, _ := setup(t)
+	ctx := context.Background()
+	repo.CreateTenant(ctx, domain.Tenant{ID: "t1", MerchantID: "merchant-xloyal", Active: true})
+	if err := repo.CreateQRISTemplate(ctx, domain.QRISTemplate{ID: "template", StaticPayload: xloyalStaticQRISFixture, MerchantName: "XLOYAL MERCHANT", MerchantCity: "BANDAR LAMPUNG", AccessScope: "all_tenants", StaticToDynamic: true, Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	invoice, _, err := s.CreateInvoice(ctx, CreateInvoiceInput{TenantID: "t1", MerchantAccountID: "m1", IdempotencyKey: "plain-hosted", Amount: 1000, SandboxMode: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invoice.RequestedAmount != 1000 || invoice.Amount != 1000 || invoice.UniqueAmountCode != 0 {
+		t.Fatalf("unexpected hosted amount: %+v", invoice)
+	}
+}
+
+func TestCreateSandboxInvoiceRejectsMissingOrIneligibleTemplates(t *testing.T) {
+	tests := map[string]domain.QRISTemplate{
+		"missing":      {},
+		"inactive":     {ID: "inactive", StaticPayload: xloyalStaticQRISFixture, AccessScope: "all_tenants", StaticToDynamic: true},
+		"static-only":  {ID: "static", StaticPayload: xloyalStaticQRISFixture, AccessScope: "all_tenants", Active: true},
+		"other-tenant": {ID: "other", TenantID: "t2", StaticPayload: xloyalStaticQRISFixture, AccessScope: "selected_tenant", StaticToDynamic: true, Active: true},
+	}
+	for name, template := range tests {
+		t.Run(name, func(t *testing.T) {
+			s, repo, provider := setup(t)
+			ctx := context.Background()
+			if template.ID != "" {
+				if err := repo.CreateQRISTemplate(ctx, template); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, created, err := s.CreateInvoice(ctx, CreateInvoiceInput{
+				TenantID: "t1", MerchantAccountID: "m1", IdempotencyKey: "ineligible-" + name,
+				Amount: 1000, SandboxMode: true,
+			})
+			if err == nil || !created {
+				t.Fatalf("create sandbox invoice: created=%v err=%v", created, err)
+			}
+			if provider.creates != 0 {
+				t.Fatalf("provider creates=%d, want 0", provider.creates)
+			}
+			invoices, listErr := repo.ListInvoices(ctx, "t1", 10)
+			if listErr != nil || len(invoices) != 1 {
+				t.Fatalf("list invoices: count=%d err=%v", len(invoices), listErr)
+			}
+			stored := invoices[0]
+			if stored.Status != domain.InvoiceFailed || stored.QRPayload != "" {
+				t.Fatalf("stored invoice status=%s payload=%q", stored.Status, stored.QRPayload)
+			}
+		})
+	}
+}
+
+func TestCreateSandboxInvoicePrefersTenantTemplateDeterministically(t *testing.T) {
+	s, repo, _ := setup(t)
+	ctx := context.Background()
+	now := s.now()
+	templates := []domain.QRISTemplate{
+		{ID: "global", Name: "Global", StaticPayload: xloyalStaticQRISFixture, AccessScope: "all_tenants", StaticToDynamic: true, Active: true, CreatedAt: now},
+		{ID: "tenant-z", TenantID: "t1", Name: "Tenant Z", StaticPayload: xloyalStaticQRISFixture, AccessScope: "selected_tenant", StaticToDynamic: true, Active: true, CreatedAt: now},
+		{ID: "tenant-a", TenantID: "t1", Name: "Tenant A", StaticPayload: xloyalStaticQRISFixture, AccessScope: "selected_tenant", StaticToDynamic: true, Active: true, CreatedAt: now},
+	}
+	for _, template := range templates {
+		if err := repo.CreateQRISTemplate(ctx, template); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	selected, err := s.sandboxQRISTemplate(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.ID != "tenant-a" {
+		t.Fatalf("selected template=%q, want tenant-a", selected.ID)
 	}
 }
 

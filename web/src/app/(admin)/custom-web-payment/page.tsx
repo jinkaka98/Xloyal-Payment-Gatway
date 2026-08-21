@@ -160,7 +160,11 @@ const mockSession = (
         : status === "failed"
           ? "failed"
           : "pending",
-  amount: 1002,
+  requested_amount: 1000,
+  amount: 1001,
+  unique_amount_code: 1,
+  qris_merchant_name: "XLOYAL MERCHANT",
+  qris_merchant_city: "BANDAR LAMPUNG",
   currency: "IDR",
   description: "Pesanan #XL-88231 (1x Paket Layanan Digital)",
   qr_payload: "000201010212fixture-preview-qris-xloyal",

@@ -671,7 +671,7 @@ func TestAdminListLimit(t *testing.T) {
 }
 
 func TestAdminQRISTestWorkflow(t *testing.T) {
-	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
+	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5915XLOYAL MERCHANT6014BANDAR LAMPUNG610565164630448AD"
 	png, err := qrcode.Encode(staticPayload, qrcode.Medium, 320)
 	if err != nil {
 		t.Fatal(err)
@@ -790,7 +790,7 @@ func TestTenantTransactionLedgerIncludesProductionInvoicesAndSandboxQRIS(t *test
 }
 
 func TestTenantCanGenerateDynamicQRISOnlyFromOwnedEnabledTemplate(t *testing.T) {
-	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
+	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5915XLOYAL MERCHANT6014BANDAR LAMPUNG610565164630448AD"
 	repo := store.NewMemory()
 	ctx := context.Background()
 	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
@@ -911,7 +911,7 @@ func TestTenantQRISCreatePreservesTemplateRepositoryFailure(t *testing.T) {
 }
 
 func TestTenantQRISTransactionRoutesPersistAndAreIdempotent(t *testing.T) {
-	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
+	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5915XLOYAL MERCHANT6014BANDAR LAMPUNG610565164630448AD"
 	repo := store.NewMemory()
 	ctx := context.Background()
 	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
@@ -1093,7 +1093,7 @@ func TestTenantQRISCancelLifecycle(t *testing.T) {
 }
 
 func TestTenantQRISUniqueAmountAllocatesDistinctPayableAmounts(t *testing.T) {
-	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
+	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5915XLOYAL MERCHANT6014BANDAR LAMPUNG610565164630448AD"
 	repo := store.NewMemory()
 	ctx := context.Background()
 	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
@@ -1167,7 +1167,7 @@ func TestTenantCooldownMinutesMustBeBetweenThirtyAndSixty(t *testing.T) {
 }
 
 func TestTenantQRISWithoutUniqueAmountRejectsOverlappingNominal(t *testing.T) {
-	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
+	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5915XLOYAL MERCHANT6014BANDAR LAMPUNG610565164630448AD"
 	repo := store.NewMemory()
 	ctx := context.Background()
 	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
@@ -1191,7 +1191,7 @@ func TestTenantQRISWithoutUniqueAmountRejectsOverlappingNominal(t *testing.T) {
 }
 
 func TestAdminQRISTestCannotReuseTenantReservedPayableAmount(t *testing.T) {
-	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
+	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5915XLOYAL MERCHANT6014BANDAR LAMPUNG610565164630448AD"
 	repo := store.NewMemory()
 	ctx := context.Background()
 	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
@@ -1217,7 +1217,7 @@ func TestAdminQRISTestCannotReuseTenantReservedPayableAmount(t *testing.T) {
 }
 
 func TestTenantQRISTransactionIdempotencyRejectsDifferentExpiry(t *testing.T) {
-	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
+	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5915XLOYAL MERCHANT6014BANDAR LAMPUNG610565164630448AD"
 	repo := store.NewMemory()
 	ctx := context.Background()
 	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
@@ -1241,7 +1241,7 @@ func TestTenantQRISTransactionIdempotencyRejectsDifferentExpiry(t *testing.T) {
 }
 
 func TestExpiredTenantQRISTransactionDoesNotExposePayableQR(t *testing.T) {
-	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
+	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5915XLOYAL MERCHANT6014BANDAR LAMPUNG610565164630448AD"
 	repo := store.NewMemory()
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -1269,7 +1269,7 @@ func TestExpiredTenantQRISTransactionDoesNotExposePayableQR(t *testing.T) {
 }
 
 func TestTenantQRISTransactionConcurrentIdempotencyCreatesOneLedgerEntry(t *testing.T) {
-	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
+	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5915XLOYAL MERCHANT6014BANDAR LAMPUNG610565164630448AD"
 	repo := store.NewMemory()
 	ctx := context.Background()
 	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
@@ -1323,7 +1323,7 @@ func TestTenantQRISTransactionConcurrentIdempotencyCreatesOneLedgerEntry(t *test
 }
 
 func TestTenantQRISTransactionRateLimitCountsDistinctIdempotencyKeys(t *testing.T) {
-	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
+	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5915XLOYAL MERCHANT6014BANDAR LAMPUNG610565164630448AD"
 	repo := store.NewMemory()
 	ctx := context.Background()
 	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-a", Active: true})
@@ -1369,7 +1369,7 @@ func TestAdminCanEditQRISTemplateAccessAndRateLimit(t *testing.T) {
 }
 
 func TestCreateTestPaymentInjectsUniqueCode(t *testing.T) {
-	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5906ByAsta6011Kab. Malang61056516463049095"
+	const staticPayload = "00020101021126570011ID.DANA.WWW011893600915303088327702090308832770303UMI51440014ID.CO.QRIS.WWW0215ID10265298200310303UMI5204504553033605802ID5915XLOYAL MERCHANT6014BANDAR LAMPUNG610565164630448AD"
 	repo := store.NewMemory()
 	ctx := context.Background()
 	repo.CreateMerchantID(ctx, domain.MerchantID{ID: "merchant-test", Name: "Test merchant", Active: true})
@@ -1404,7 +1404,7 @@ func TestPaymentSessionHTTPCreateSnapshotCancelAndPublicIsolation(t *testing.T) 
 	repo := store.NewMemory()
 	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-a", APIKeyHash: security.HashSecret("key-a"), APIKeyCiphertext: "api-secret", WebhookSecretCiphertext: "webhook-secret", Active: true})
 	repo.CreateTenant(ctx, domain.Tenant{ID: "tenant-b", APIKeyHash: security.HashSecret("key-b"), Active: true})
-	repo.CreateInvoice(ctx, domain.Invoice{ID: "invoice-a", TenantID: "tenant-a", IdempotencyKey: "invoice-a", Amount: 100037, Currency: "IDR", Description: "public order", QRPayload: "qris-payload", Status: domain.InvoicePending, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	repo.CreateInvoice(ctx, domain.Invoice{ID: "invoice-a", TenantID: "tenant-a", IdempotencyKey: "invoice-a", RequestedAmount: 100000, Amount: 100037, UniqueAmountCode: 37, QRISTemplateID: "template-xloyal", QRISMerchantName: "XLOYAL MERCHANT", QRISMerchantCity: "BANDAR LAMPUNG", Currency: "IDR", Description: "public order", QRPayload: "qris-payload", Status: domain.InvoicePending, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour)})
 	repo.CreateInvoice(ctx, domain.Invoice{ID: "redirect-invoice", TenantID: "tenant-a", IdempotencyKey: "redirect", Amount: 1000, Currency: "IDR", Status: domain.InvoicePending, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour)})
 	service := gateway.PaymentSessionService{Repo: repo, Now: func() time.Time { return now }}
 	h := Server{Repo: repo, PaymentSessions: service, PublicPaymentBaseURL: "https://pay.example.test"}.Handler()
@@ -1442,6 +1442,9 @@ func TestPaymentSessionHTTPCreateSnapshotCancelAndPublicIsolation(t *testing.T) 
 	if err := json.Unmarshal(getRes.Body.Bytes(), &snapshot); err != nil || snapshot.Status != "payment_pending" || snapshot.Amount != 100037 {
 		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
 	}
+	if snapshot.RequestedAmount != 100000 || snapshot.UniqueAmountCode != 37 || snapshot.QRISMerchantName != "XLOYAL MERCHANT" || snapshot.QRISMerchantCity != "BANDAR LAMPUNG" {
+		t.Fatalf("public QRIS metadata missing: %+v", snapshot)
+	}
 	wrongTokenRes := httptest.NewRecorder()
 	h.ServeHTTP(wrongTokenRes, httptest.NewRequest(http.MethodGet, "/v1/payment-sessions/not-a-real-token", nil))
 	if wrongTokenRes.Code != http.StatusNotFound {
@@ -1454,12 +1457,16 @@ func TestPaymentSessionHTTPCreateSnapshotCancelAndPublicIsolation(t *testing.T) 
 	if cancelRes.Code != http.StatusOK {
 		t.Fatalf("cancel code=%d body=%s", cancelRes.Code, cancelRes.Body.String())
 	}
+	snapshot = PublicPaymentSessionResponse{}
 	if err := json.Unmarshal(cancelRes.Body.Bytes(), &snapshot); err != nil || snapshot.Status != "cancelled" {
 		t.Fatalf("cancel snapshot=%+v err=%v", snapshot, err)
 	}
+	if snapshot.QRPayload != "" || strings.Contains(cancelRes.Body.String(), `"qr_payload"`) {
+		t.Fatalf("cancelled checkout still exposes QR payload: %s", cancelRes.Body.String())
+	}
 	invoiceAfterCancel, err := repo.Invoice(ctx, "tenant-a", "invoice-a")
-	if err != nil || invoiceAfterCancel.Status != domain.InvoicePending {
-		t.Fatalf("session cancel changed invoice financial state: %+v err=%v", invoiceAfterCancel, err)
+	if err != nil || invoiceAfterCancel.Status != domain.InvoiceCancelled {
+		t.Fatalf("session cancel did not cancel pending invoice: %+v err=%v", invoiceAfterCancel, err)
 	}
 	repeatRes := httptest.NewRecorder()
 	h.ServeHTTP(repeatRes, httptest.NewRequest(http.MethodPost, "/v1/payment-sessions/"+token+"/cancel", nil))

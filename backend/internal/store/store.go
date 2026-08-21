@@ -47,9 +47,11 @@ type Repository interface {
 	UpdateMerchantAccount(context.Context, domain.MerchantAccount) error
 	ListMerchantAccounts(context.Context, string) ([]domain.MerchantAccount, error)
 	CreateInvoice(context.Context, domain.Invoice) (domain.Invoice, bool, error)
+	ActivateHostedInvoice(context.Context, domain.Invoice) error
 	Invoice(context.Context, string, string) (domain.Invoice, error)
 	UpdateInvoice(context.Context, domain.Invoice) error
 	UpdatePendingInvoice(context.Context, domain.Invoice) (bool, error)
+	CancelPendingInvoice(context.Context, domain.Invoice) (bool, error)
 	PendingInvoices(context.Context, time.Time, int) ([]domain.Invoice, error)
 	ListInvoices(context.Context, string, int) ([]domain.Invoice, error)
 	CreateQRISTemplate(context.Context, domain.QRISTemplate) error
@@ -120,6 +122,7 @@ type Memory struct {
 	payments                 map[string]domain.TestPayment
 	qrisRateWindows          map[string]qrisRateWindow
 	uniqueAmountReservations map[string]uniqueAmountReservation
+	hostedAmountReservations map[string]uniqueAmountReservation
 	browserJobs              map[string]domain.BrowserJob
 	paymentSessions          map[string]domain.PaymentSession
 	paymentEvents            []domain.PaymentEvent
@@ -137,6 +140,7 @@ type qrisRateWindow struct {
 
 type uniqueAmountReservation struct {
 	PaymentID       string
+	InvoiceID       string
 	TenantID        string
 	MerchantID      string
 	PayableAmount   int64
@@ -153,7 +157,7 @@ func NewMemory() *Memory {
 	return &Memory{
 		tenants: map[string]domain.Tenant{}, merchants: map[string]domain.MerchantAccount{},
 		merchantIDs: map[string]domain.MerchantID{}, connections: map[string]domain.MerchantConnection{}, portalTransactions: map[string]domain.PortalTransaction{}, tariffs: map[string]domain.Tariff{},
-		invoices: map[string]domain.Invoice{}, idem: map[string]string{},
+		invoices: map[string]domain.Invoice{}, idem: map[string]string{}, hostedAmountReservations: map[string]uniqueAmountReservation{},
 		templates: map[string]domain.QRISTemplate{}, payments: map[string]domain.TestPayment{}, qrisRateWindows: map[string]qrisRateWindow{}, uniqueAmountReservations: map[string]uniqueAmountReservation{}, browserJobs: map[string]domain.BrowserJob{}, paymentSessions: map[string]domain.PaymentSession{}, outboxEvents: map[string]domain.OutboxEvent{}, webhookDeliveries: map[string]domain.WebhookDelivery{}, redirectURLs: map[string]domain.AllowedRedirectURL{}, themes: map[string]domain.PaymentTheme{}, themeVersions: map[string]domain.PaymentThemeVersion{},
 	}
 }
@@ -507,7 +511,9 @@ func (m *Memory) RotateTenantWebhookSecret(_ context.Context, tenantID, cipherte
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	v, ok := m.tenants[tenantID]
-	if !ok { return ErrNotFound }
+	if !ok {
+		return ErrNotFound
+	}
 	v.WebhookSecretCiphertext = ciphertext
 	m.tenants[tenantID] = v
 	m.audits = append(m.audits, audit)
@@ -562,6 +568,11 @@ func (m *Memory) ListMerchantAccounts(_ context.Context, tenant string) ([]domai
 func (m *Memory) CreateInvoice(_ context.Context, v domain.Invoice) (domain.Invoice, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Older callers only populated Amount. Preserve it as the customer order
+	// amount so the public session and ledger never expose a zero request.
+	if v.RequestedAmount <= 0 {
+		v.RequestedAmount = v.Amount
+	}
 	k := v.TenantID + "\x00" + v.IdempotencyKey
 	if id, ok := m.idem[k]; ok {
 		return m.invoices[id], false, nil
@@ -569,6 +580,36 @@ func (m *Memory) CreateInvoice(_ context.Context, v domain.Invoice) (domain.Invo
 	m.invoices[v.ID] = v
 	m.idem[k] = v.ID
 	return v, true, nil
+}
+func (m *Memory) ActivateHostedInvoice(_ context.Context, v domain.Invoice) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key, reservation := range m.hostedAmountReservations {
+		if (reservation.State == "cooldown" && !reservation.CooldownUntil.After(v.CreatedAt)) || (reservation.State == "active" && !reservation.ReservedAt.Add(30*time.Minute).After(v.CreatedAt)) {
+			delete(m.hostedAmountReservations, key)
+		}
+	}
+	old, ok := m.invoices[v.ID]
+	if !ok || old.TenantID != v.TenantID {
+		return ErrNotFound
+	}
+	if old.Status != domain.InvoiceCreating {
+		return ErrConflict
+	}
+	if v.UniqueAmountCode > 0 {
+		key := v.QRISMerchantID + "\x00" + fmt.Sprint(v.Amount)
+		if _, exists := m.hostedAmountReservations[key]; exists {
+			return ErrUniqueAmountUnavailable
+		}
+		tenant := m.tenants[v.TenantID]
+		minutes := tenant.UniqueAmountCooldownMinutes
+		if minutes < 30 || minutes > 60 {
+			minutes = 30
+		}
+		m.hostedAmountReservations[key] = uniqueAmountReservation{PaymentID: v.ID, TenantID: v.TenantID, MerchantID: v.QRISMerchantID, PayableAmount: v.Amount, Code: v.UniqueAmountCode, CooldownMinutes: minutes, State: "active", ReservedAt: v.CreatedAt}
+	}
+	m.invoices[v.ID] = v
+	return nil
 }
 func (m *Memory) Invoice(_ context.Context, tenant, id string) (domain.Invoice, error) {
 	m.mu.Lock()
@@ -600,7 +641,22 @@ func (m *Memory) UpdatePendingInvoice(_ context.Context, v domain.Invoice) (bool
 		return false, nil
 	}
 	m.invoices[v.ID] = v
+	if v.Status != domain.InvoicePending {
+		for key, reservation := range m.hostedAmountReservations {
+			if reservation.PaymentID != v.ID {
+				continue
+			}
+			reservation.State = "cooldown"
+			reservation.TerminalStatus = string(v.Status)
+			reservation.TerminalAt = v.UpdatedAt
+			reservation.CooldownUntil = v.UpdatedAt.Add(time.Duration(reservation.CooldownMinutes) * time.Minute)
+			m.hostedAmountReservations[key] = reservation
+		}
+	}
 	return true, nil
+}
+func (m *Memory) CancelPendingInvoice(ctx context.Context, v domain.Invoice) (bool, error) {
+	return m.UpdatePendingInvoice(ctx, v)
 }
 func (m *Memory) PendingInvoices(_ context.Context, due time.Time, limit int) ([]domain.Invoice, error) {
 	m.mu.Lock()

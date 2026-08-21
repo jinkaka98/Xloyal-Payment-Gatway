@@ -119,16 +119,28 @@ func (r *Repository) RotateTenantAPIKey(ctx context.Context, tenantID, expectedH
 
 func (r *Repository) RotateTenantWebhookSecret(ctx context.Context, tenantID, ciphertext string, audit domain.AuditEvent) error {
 	tx, err := r.DB.BeginTx(ctx, nil)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx, `UPDATE tenants SET webhook_secret_ciphertext=$1 WHERE id=$2 AND deleted_at IS NULL`, ciphertext, tenantID)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	n, err := res.RowsAffected()
-	if err != nil { return err }
-	if n == 0 { return store.ErrNotFound }
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
 	meta, err := json.Marshal(audit.Metadata)
-	if err != nil { return err }
-	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(id,tenant_id,actor,action,resource_type,resource_id,metadata,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, audit.ID, null(audit.TenantID), audit.Actor, audit.Action, audit.ResourceType, audit.ResourceID, meta, audit.CreatedAt); err != nil { return err }
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(id,tenant_id,actor,action,resource_type,resource_id,metadata,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, audit.ID, null(audit.TenantID), audit.Actor, audit.Action, audit.ResourceType, audit.ResourceID, meta, audit.CreatedAt); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 func (r *Repository) ListTenants(ctx context.Context) ([]domain.Tenant, error) {
@@ -404,7 +416,11 @@ func (r *Repository) ListMerchantAccounts(ctx context.Context, tenant string) ([
 	return out, rows.Err()
 }
 func (r *Repository) CreateInvoice(ctx context.Context, v domain.Invoice) (domain.Invoice, bool, error) {
-	res, err := r.DB.ExecContext(ctx, `INSERT INTO invoices(id,tenant_id,merchant_account_id,idempotency_key,amount,currency,description,provider_reference,provider_request_date,qr_payload,status,created_at,updated_at,expires_at,check_count,sandbox_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(tenant_id,idempotency_key) DO NOTHING`, v.ID, v.TenantID, v.MerchantAccountID, v.IdempotencyKey, v.Amount, v.Currency, v.Description, v.ProviderReference, v.ProviderRequestDate, v.QRPayload, v.Status, v.CreatedAt, v.UpdatedAt, v.ExpiresAt, v.CheckCount, v.SandboxMode)
+	// Keep compatibility with invoice producers predating requested_amount.
+	if v.RequestedAmount <= 0 {
+		v.RequestedAmount = v.Amount
+	}
+	res, err := r.DB.ExecContext(ctx, `INSERT INTO invoices(id,tenant_id,merchant_account_id,idempotency_key,requested_amount,amount,unique_amount_code,qris_template_id,qris_merchant_id,qris_merchant_name,qris_merchant_city,currency,description,provider_reference,provider_request_date,qr_payload,status,created_at,updated_at,expires_at,check_count,sandbox_mode) VALUES($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),NULLIF($9,''),NULLIF($10,''),NULLIF($11,''),$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) ON CONFLICT(tenant_id,idempotency_key) DO NOTHING`, v.ID, v.TenantID, v.MerchantAccountID, v.IdempotencyKey, v.RequestedAmount, v.Amount, v.UniqueAmountCode, v.QRISTemplateID, v.QRISMerchantID, v.QRISMerchantName, v.QRISMerchantCity, v.Currency, v.Description, v.ProviderReference, v.ProviderRequestDate, v.QRPayload, v.Status, v.CreatedAt, v.UpdatedAt, v.ExpiresAt, v.CheckCount, v.SandboxMode)
 	if err != nil {
 		return v, false, err
 	}
@@ -417,6 +433,42 @@ func (r *Repository) CreateInvoice(ctx context.Context, v domain.Invoice) (domai
 	}
 	existing, err := r.invoiceByIdempotency(ctx, v.TenantID, v.IdempotencyKey)
 	return existing, false, err
+}
+func (r *Repository) ActivateHostedInvoice(ctx context.Context, v domain.Invoice) error {
+	tx, err := r.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM hosted_invoice_unique_amount_reservations WHERE (state='cooldown' AND cooldown_until <= $1) OR (state='active' AND expires_at <= $1)`, v.CreatedAt); err != nil {
+		return err
+	}
+	if v.UniqueAmountCode > 0 {
+		var cooldown int
+		if err = tx.QueryRowContext(ctx, `SELECT unique_amount_cooldown_minutes FROM tenants WHERE id=$1`, v.TenantID).Scan(&cooldown); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO hosted_invoice_unique_amount_reservations(invoice_id,tenant_id,merchant_id,payable_amount,unique_amount_code,expires_at,reserved_at,cooldown_minutes) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, v.ID, v.TenantID, v.QRISMerchantID, v.Amount, v.UniqueAmountCode, v.ExpiresAt, v.CreatedAt, cooldown)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return store.ErrUniqueAmountUnavailable
+			}
+			return err
+		}
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE invoices SET requested_amount=$1,amount=$2,unique_amount_code=$3,qris_template_id=NULLIF($4,''),qris_merchant_id=NULLIF($5,''),qris_merchant_name=NULLIF($6,''),qris_merchant_city=NULLIF($7,''),provider_reference=$8,provider_request_date=$9,qr_payload=$10,status=$11,updated_at=$12 WHERE id=$13 AND tenant_id=$14 AND status='creating'`, v.RequestedAmount, v.Amount, v.UniqueAmountCode, v.QRISTemplateID, v.QRISMerchantID, v.QRISMerchantName, v.QRISMerchantCity, v.ProviderReference, v.ProviderRequestDate, v.QRPayload, v.Status, v.UpdatedAt, v.ID, v.TenantID)
+	if err != nil {
+		return err
+	}
+	changed, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return store.ErrConflict
+	}
+	return tx.Commit()
 }
 func (r *Repository) invoiceByIdempotency(ctx context.Context, tenant, key string) (domain.Invoice, error) {
 	return scanInvoice(r.DB.QueryRowContext(ctx, invoiceColumns+` WHERE tenant_id=$1 AND idempotency_key=$2`, tenant, key))
@@ -440,6 +492,17 @@ func (r *Repository) UpdateInvoice(ctx context.Context, v domain.Invoice) error 
 }
 func (r *Repository) UpdatePendingInvoice(ctx context.Context, v domain.Invoice) (bool, error) {
 	res, err := r.DB.ExecContext(ctx, `UPDATE invoices SET provider_reference=$1,provider_request_date=$2,qr_payload=$3,status=$4,updated_at=$5,last_checked_at=$6,check_count=$7 WHERE id=$8 AND tenant_id=$9 AND status='pending'`, v.ProviderReference, v.ProviderRequestDate, v.QRPayload, v.Status, v.UpdatedAt, v.LastCheckedAt, v.CheckCount, v.ID, v.TenantID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if n == 1 && v.Status != domain.InvoicePending {
+		_, err = r.DB.ExecContext(ctx, `UPDATE hosted_invoice_unique_amount_reservations SET state='cooldown',terminal_status=$1,terminal_at=$2,cooldown_until=$2 + (cooldown_minutes * INTERVAL '1 minute') WHERE invoice_id=$3 AND unique_amount_code > 0`, v.Status, v.UpdatedAt, v.ID)
+	}
+	return n == 1, err
+}
+func (r *Repository) CancelPendingInvoice(ctx context.Context, v domain.Invoice) (bool, error) {
+	res, err := r.DB.ExecContext(ctx, `UPDATE invoices SET status='cancelled',updated_at=$1,last_checked_at=NULL WHERE id=$2 AND tenant_id=$3 AND status='pending'`, v.UpdatedAt, v.ID, v.TenantID)
 	if err != nil {
 		return false, err
 	}
@@ -974,13 +1037,13 @@ func (r *Repository) ListAudit(ctx context.Context, tenant string, limit int) ([
 	return out, rows.Err()
 }
 
-const invoiceColumns = `SELECT id,tenant_id,merchant_account_id,idempotency_key,amount,currency,description,provider_reference,provider_request_date,qr_payload,status,created_at,updated_at,expires_at,last_checked_at,check_count,sandbox_mode FROM invoices`
+const invoiceColumns = `SELECT id,tenant_id,merchant_account_id,idempotency_key,COALESCE(requested_amount,amount),amount,unique_amount_code,COALESCE(qris_template_id,''),COALESCE(qris_merchant_id,''),COALESCE(qris_merchant_name,''),COALESCE(qris_merchant_city,''),currency,description,provider_reference,provider_request_date,qr_payload,status,created_at,updated_at,expires_at,last_checked_at,check_count,sandbox_mode FROM invoices`
 
 type scanner interface{ Scan(...any) error }
 
 func scanInvoice(s scanner) (domain.Invoice, error) {
 	var v domain.Invoice
-	err := s.Scan(&v.ID, &v.TenantID, &v.MerchantAccountID, &v.IdempotencyKey, &v.Amount, &v.Currency, &v.Description, &v.ProviderReference, &v.ProviderRequestDate, &v.QRPayload, &v.Status, &v.CreatedAt, &v.UpdatedAt, &v.ExpiresAt, &v.LastCheckedAt, &v.CheckCount, &v.SandboxMode)
+	err := s.Scan(&v.ID, &v.TenantID, &v.MerchantAccountID, &v.IdempotencyKey, &v.RequestedAmount, &v.Amount, &v.UniqueAmountCode, &v.QRISTemplateID, &v.QRISMerchantID, &v.QRISMerchantName, &v.QRISMerchantCity, &v.Currency, &v.Description, &v.ProviderReference, &v.ProviderRequestDate, &v.QRPayload, &v.Status, &v.CreatedAt, &v.UpdatedAt, &v.ExpiresAt, &v.LastCheckedAt, &v.CheckCount, &v.SandboxMode)
 	return v, notFound(err)
 }
 func scanInvoices(rows *sql.Rows, err error) ([]domain.Invoice, error) {

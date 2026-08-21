@@ -210,6 +210,36 @@ func (s PaymentSessionService) Cancel(ctx context.Context, token string) (Paymen
 		return snapshot, ErrPaymentSessionStateConflict
 	}
 	now := s.now()
+	// Cancel the invoice with a conditional pending-only update first. This
+	// prevents a worker that already won the pending->paid race from being
+	// overwritten by a checkout cancel. A concurrent cancel may already have
+	// committed the same terminal state; that case is idempotent.
+	if snapshot.Invoice.Status == domain.InvoicePending {
+		invoice := snapshot.Invoice
+		if err := invoice.Transition(domain.InvoiceCancelled, now); err != nil {
+			return PaymentSessionSnapshot{}, err
+		}
+		changed, cancelErr := s.Repo.CancelPendingInvoice(ctx, invoice)
+		if cancelErr != nil {
+			return PaymentSessionSnapshot{}, cancelErr
+		}
+		if !changed {
+			latest, latestErr := s.Snapshot(ctx, token)
+			if latestErr != nil {
+				return PaymentSessionSnapshot{}, latestErr
+			}
+			if latest.Session.Status == domain.PaymentSessionCancelled {
+				return latest, nil
+			}
+			return latest, ErrPaymentSessionStateConflict
+		}
+	} else if snapshot.Invoice.Status != domain.InvoiceCancelled {
+		latest, latestErr := s.Snapshot(ctx, token)
+		if latestErr != nil {
+			return PaymentSessionSnapshot{}, latestErr
+		}
+		return latest, ErrPaymentSessionStateConflict
+	}
 	if _, transitionErr := s.transition(ctx, snapshot.Session, domain.PaymentSessionCancelled, now); transitionErr != nil {
 		if !errors.Is(transitionErr, store.ErrConflict) {
 			return PaymentSessionSnapshot{}, transitionErr

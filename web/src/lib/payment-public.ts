@@ -20,6 +20,10 @@ export interface PublicPaymentSession {
   payment_status: "creating" | "pending" | "paid" | "expired" | "failed";
   checkout_url?: string;
   amount: number;
+  requested_amount?: number;
+  unique_amount_code?: number;
+  qris_merchant_name?: string;
+  qris_merchant_city?: string;
   currency: string;
   description?: string;
   qr_payload?: string;

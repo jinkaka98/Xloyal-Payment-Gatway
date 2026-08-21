@@ -57,10 +57,17 @@ button { color: inherit; }
 .status-failed { background: var(--host-danger, #b44444); }
 .status-expired, .status-cancelled { background: #9a6a18; }
 .hosted-message { margin: 10px auto 0; max-width: 380px; color: var(--host-muted, #68766f); font-size: 13.5px; font-weight: 600; line-height: 1.5; word-break: break-word; }
+.hosted-merchant-identity { width: min(100%, 380px); margin: 16px auto 2px; padding: 12px 14px; display: flex; flex-direction: column; align-items: center; gap: 3px; border: 1px solid color-mix(in srgb, var(--host-accent, #1a5c55) 22%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--host-accent, #1a5c55) 6%, transparent); }
+.hosted-merchant-label { color: var(--host-muted, #68766f); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+.hosted-merchant-identity strong { color: var(--host-text, #18231f); font-size: 16px; font-weight: 850; }
+.hosted-merchant-identity small { color: var(--host-muted, #68766f); font-size: 12px; }
+.hosted-merchant-hint { margin-top: 4px; color: var(--host-muted, #68766f); font-size: 11px; line-height: 1.4; }
 .hosted-description { margin: 6px auto 0; color: var(--host-muted, #68766f); font-size: 12.5px; max-width: 400px; word-break: break-word; line-height: 1.45; }
 
 /* Amount Row & Copy Clipboard Trigger */
 .hosted-amount-row { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 16px auto 4px; flex-wrap: wrap; }
+.hosted-amount-breakdown { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; color: var(--host-muted, #68766f); font-size: 12px; line-height: 1.5; }
+.hosted-amount-breakdown strong { color: var(--host-accent, #1a5c55); font-weight: 800; }
 .hosted-amount-value { font-size: clamp(26px, 5.5vw, 32px); line-height: 1.15; font-weight: 850; color: var(--host-text, #18231f); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .hosted-copy-btn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border: 1.5px solid var(--line-strong, #cbd5e1); border-radius: 6px; background: #fff; color: var(--host-text, #18231f); font-size: 11.5px; font-weight: 650; cursor: pointer; transition: all 0.15s ease; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
 .hosted-copy-btn:hover { border-color: var(--host-accent); color: var(--host-accent); background: var(--surface-muted); transform: translateY(-1px); }
@@ -986,5 +993,4 @@ input:checked + .slider:before { transform: translateX(18px); }
 
 .reality-actions { margin-top: 4px; }
 .reality-sandbox-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 14px; border-top: 1px solid var(--line); flex-wrap: wrap; }
-
 

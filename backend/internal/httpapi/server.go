@@ -902,10 +902,15 @@ func (s Server) listAdminTenantTransactions(w http.ResponseWriter, r *http.Reque
 	}
 	items := make([]domain.TenantTransaction, 0, len(invoices)+len(payments))
 	for _, invoice := range invoices {
+		requestedAmount := invoice.RequestedAmount
+		if requestedAmount <= 0 {
+			requestedAmount = invoice.Amount
+		}
 		items = append(items, domain.TenantTransaction{
 			ID: invoice.ID, TenantID: invoice.TenantID, MerchantID: invoice.MerchantAccountID,
 			Kind: "invoice", Mode: transactionMode(invoice.SandboxMode), RequestSource: "tenant_invoice_api",
-			IdempotencyKey: invoice.IdempotencyKey, Amount: invoice.Amount, Currency: invoice.Currency,
+			IdempotencyKey: invoice.IdempotencyKey, Amount: requestedAmount, PayableAmount: invoice.Amount,
+			UniqueAmountCode: invoice.UniqueAmountCode, Currency: invoice.Currency,
 			Status: invoice.Status, ProviderReference: invoice.ProviderReference, CreatedAt: invoice.CreatedAt,
 			UpdatedAt: invoice.UpdatedAt, ExpiresAt: invoice.ExpiresAt, LastCheckedAt: invoice.LastCheckedAt,
 			CheckCount: invoice.CheckCount,
@@ -1131,19 +1136,23 @@ type publicPaymentRedirect struct {
 // PublicPaymentSessionResponse is deliberately separate from domain.PaymentSession.
 // It contains only checkout-safe invoice/session/theme fields.
 type PublicPaymentSessionResponse struct {
-	SessionID     string                 `json:"session_id"`
-	InvoiceID     string                 `json:"invoice_id"`
-	Status        string                 `json:"status"`
-	PaymentStatus string                 `json:"payment_status"`
-	CheckoutURL   string                 `json:"checkout_url,omitempty"`
-	Amount        int64                  `json:"amount"`
-	Currency      string                 `json:"currency"`
-	Description   string                 `json:"description,omitempty"`
-	QRPayload     string                 `json:"qr_payload,omitempty"`
-	ExpiresAt     time.Time              `json:"expires_at"`
-	ServerNow     time.Time              `json:"server_now"`
-	Theme         *publicPaymentTheme    `json:"theme,omitempty"`
-	Redirect      *publicPaymentRedirect `json:"redirect,omitempty"`
+	SessionID        string                 `json:"session_id"`
+	InvoiceID        string                 `json:"invoice_id"`
+	Status           string                 `json:"status"`
+	PaymentStatus    string                 `json:"payment_status"`
+	CheckoutURL      string                 `json:"checkout_url,omitempty"`
+	Amount           int64                  `json:"amount"`
+	RequestedAmount  int64                  `json:"requested_amount"`
+	UniqueAmountCode int64                  `json:"unique_amount_code,omitempty"`
+	QRISMerchantName string                 `json:"qris_merchant_name,omitempty"`
+	QRISMerchantCity string                 `json:"qris_merchant_city,omitempty"`
+	Currency         string                 `json:"currency"`
+	Description      string                 `json:"description,omitempty"`
+	QRPayload        string                 `json:"qr_payload,omitempty"`
+	ExpiresAt        time.Time              `json:"expires_at"`
+	ServerNow        time.Time              `json:"server_now"`
+	Theme            *publicPaymentTheme    `json:"theme,omitempty"`
+	Redirect         *publicPaymentRedirect `json:"redirect,omitempty"`
 }
 
 type createPaymentSessionRequest struct {
@@ -1244,9 +1253,14 @@ func (s Server) publicPaymentSessionResponse(snapshot gateway.PaymentSessionSnap
 		SessionID: snapshot.Session.ID, InvoiceID: snapshot.Invoice.ID,
 		Status:        publicPaymentSessionStatus(snapshot.Session.Status),
 		PaymentStatus: strings.ToLower(string(snapshot.Invoice.Status)), Amount: snapshot.Invoice.Amount,
+		RequestedAmount: snapshot.Invoice.RequestedAmount, UniqueAmountCode: snapshot.Invoice.UniqueAmountCode,
+		QRISMerchantName: snapshot.Invoice.QRISMerchantName, QRISMerchantCity: snapshot.Invoice.QRISMerchantCity,
 		Currency: snapshot.Invoice.Currency, Description: snapshot.Invoice.Description,
-		QRPayload: snapshot.Invoice.QRPayload, ExpiresAt: snapshot.Session.ExpiresAt,
+		ExpiresAt: snapshot.Session.ExpiresAt,
 		ServerNow: time.Now().UTC(),
+	}
+	if snapshot.Invoice.Status == domain.InvoicePending {
+		response.QRPayload = snapshot.Invoice.QRPayload
 	}
 	redirect := &publicPaymentRedirect{SuccessURL: snapshot.Session.SuccessURL, CancelURL: snapshot.Session.CancelURL, FailedURL: snapshot.Session.FailedURL, ExpiredURL: snapshot.Session.ExpiredURL}
 	if redirect.SuccessURL != "" || redirect.CancelURL != "" || redirect.FailedURL != "" || redirect.ExpiredURL != "" {
@@ -1577,17 +1591,33 @@ func (s Server) rotateTenantCredential(w http.ResponseWriter, r *http.Request, _
 
 func (s Server) rotateTenantWebhookSecret(w http.ResponseWriter, r *http.Request, _ domain.Tenant) {
 	tenant, err := s.Repo.Tenant(r.Context(), r.PathValue("id"))
-	if err != nil { notFound(w, err); return }
-	if s.Cipher == nil { problem(w, http.StatusInternalServerError, "tenant credential encryption is not configured"); return }
+	if err != nil {
+		notFound(w, err)
+		return
+	}
+	if s.Cipher == nil {
+		problem(w, http.StatusInternalServerError, "tenant credential encryption is not configured")
+		return
+	}
 	secret, err := security.GenerateWebhookSecret()
-	if err != nil { problem(w, http.StatusInternalServerError, "webhook secret generation failed"); return }
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "webhook secret generation failed")
+		return
+	}
 	ciphertext, err := s.Cipher.Encrypt([]byte(secret))
-	if err != nil { problem(w, http.StatusInternalServerError, "webhook secret encryption failed"); return }
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "webhook secret encryption failed")
+		return
+	}
 	now := time.Now().UTC()
 	audit := domain.AuditEvent{ID: newID(), Actor: "admin", Action: "tenant.webhook_secret_rotated", ResourceType: "tenant", ResourceID: tenant.ID, TenantID: tenant.ID, CreatedAt: now}
 	if err := s.Repo.RotateTenantWebhookSecret(r.Context(), tenant.ID, ciphertext, audit); err != nil {
-		if errors.Is(err, store.ErrNotFound) { problem(w, http.StatusNotFound, "not found"); return }
-		problem(w, http.StatusInternalServerError, "rotate webhook secret failed"); return
+		if errors.Is(err, store.ErrNotFound) {
+			problem(w, http.StatusNotFound, "not found")
+			return
+		}
+		problem(w, http.StatusInternalServerError, "rotate webhook secret failed")
+		return
 	}
 	write(w, http.StatusOK, map[string]any{"tenant_id": tenant.ID, "webhook_secret": secret, "rotated_at": now, "visible_once": true})
 }
@@ -1881,7 +1911,9 @@ func (s Server) adminHealth(w http.ResponseWriter, r *http.Request, _ domain.Ten
 		return
 	}
 	for _, merchant := range merchants {
-		item := result{ID: "provider-" + merchant.ID, Name: merchant.Name, Kind: "provider_api", Status: "operational", Endpoint: "InterActive QRIS API", LastCheckedAt: checkedAt, Message: "API provider dapat dijangkau"}
+		// This is an optional direct-provider probe. Browser reconciliation uses
+		// the separate browser_session item above and remains independent.
+		item := result{ID: "provider-" + merchant.ID, Name: merchant.Name + " - Direct API", Kind: "provider_api", Status: "operational", Endpoint: "InterActive QRIS API (opsional)", LastCheckedAt: checkedAt, Message: "Jalur direct API opsional dapat dijangkau"}
 		started = time.Now()
 		p, resolveErr := s.Gateway.Provider(r.Context(), merchant)
 		if resolveErr == nil {
@@ -1889,7 +1921,7 @@ func (s Server) adminHealth(w http.ResponseWriter, r *http.Request, _ domain.Ten
 		}
 		item.LatencyMS = time.Since(started).Milliseconds()
 		if resolveErr != nil {
-			item.Status, item.Message = "offline", "Koneksi API provider gagal"
+			item.Status, item.Message = "offline", "Jalur direct API opsional tidak tersedia; worker tetap memakai sesi browser"
 		} else {
 			item.LastConnectedAt = checkedAt
 		}

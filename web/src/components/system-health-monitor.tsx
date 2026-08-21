@@ -13,8 +13,8 @@ const kindLabels: Record<HealthKind, string> = {
   admin_proxy: "API proxy",
   backend_api: "Backend API",
   database: "Database",
-  browser_session: "Browser session",
-  provider_api: "Provider API",
+  browser_session: "Sesi browser merchant",
+  provider_api: "Direct API (opsional)",
 };
 
 function HealthIcon({ kind, size = 20 }: { kind: HealthKind; size?: number }) {
@@ -73,7 +73,7 @@ export function SystemHealthMonitor() {
   const healthy = overall === "operational";
 
   return <div className="page health-page">
-    <PageHeader eyebrow="Pemantauan / Infrastruktur" title="System Health" description="Status langsung jalur frontend, backend, database, API provider, dan browser Merchant ID." actions={<button className="button" onClick={() => void runChecks()} disabled={checking}><RefreshCw size={17} className={checking ? "spin" : undefined} />{checking ? "Memeriksa" : "Periksa sekarang"}</button>} />
+    <PageHeader eyebrow="Pemantauan / Infrastruktur" title="System Health" description="Sesi browser merchant dipakai worker untuk rekonsiliasi. Direct API adalah pemeriksaan jalur opsional yang terpisah." actions={<button className="button" onClick={() => void runChecks()} disabled={checking}><RefreshCw size={17} className={checking ? "spin" : undefined} />{checking ? "Memeriksa" : "Periksa sekarang"}</button>} />
 
     <div className={`health-banner health-banner-${overall}`}>
       {healthy ? <CheckCircle2 size={24} /> : <AlertTriangle size={24} />}

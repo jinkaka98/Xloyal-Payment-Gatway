@@ -241,7 +241,13 @@ type Invoice struct {
 	TenantID            string        `json:"tenant_id"`
 	MerchantAccountID   string        `json:"merchant_account_id"`
 	IdempotencyKey      string        `json:"idempotency_key"`
+	RequestedAmount     int64         `json:"requested_amount"`
 	Amount              int64         `json:"amount"`
+	UniqueAmountCode    int64         `json:"unique_amount_code"`
+	QRISTemplateID      string        `json:"qris_template_id,omitempty"`
+	QRISMerchantID      string        `json:"qris_merchant_id,omitempty"`
+	QRISMerchantName    string        `json:"qris_merchant_name,omitempty"`
+	QRISMerchantCity    string        `json:"qris_merchant_city,omitempty"`
 	Currency            string        `json:"currency"`
 	Description         string        `json:"description"`
 	ProviderReference   string        `json:"provider_reference"`
@@ -257,7 +263,7 @@ type Invoice struct {
 }
 
 func (i *Invoice) Transition(next InvoiceStatus, now time.Time) error {
-	allowed := (i.Status == InvoiceCreating && (next == InvoicePending || next == InvoiceFailed)) || (i.Status == InvoicePending && (next == InvoicePaid || next == InvoiceExpired || next == InvoiceFailed))
+	allowed := (i.Status == InvoiceCreating && (next == InvoicePending || next == InvoiceFailed)) || (i.Status == InvoicePending && (next == InvoicePaid || next == InvoiceExpired || next == InvoiceFailed || next == InvoiceCancelled))
 	if !allowed {
 		return ErrInvalidTransition
 	}

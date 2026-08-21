@@ -6,18 +6,22 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/big"
+	"sort"
 	"strings"
 	"time"
 
 	"xloyal/backend/internal/domain"
+	"xloyal/backend/internal/qris"
 	"xloyal/backend/internal/store"
 )
 
 type ProviderResolver func(context.Context, domain.MerchantAccount) (domain.PaymentProvider, error)
 type Service struct {
-	Repo     store.Repository
-	Provider ProviderResolver
-	Now      func() time.Time
+	Repo                  store.Repository
+	Provider              ProviderResolver
+	Now                   func() time.Time
+	UniqueAmountCodeOrder func() ([]int64, error)
 }
 type CreateInvoiceInput struct {
 	TenantID, MerchantAccountID, IdempotencyKey, Currency, Description string
@@ -39,8 +43,8 @@ func (s Service) CreateInvoice(ctx context.Context, in CreateInvoiceInput) (doma
 	in.IdempotencyKey = strings.TrimSpace(in.IdempotencyKey)
 	in.Currency = strings.ToUpper(strings.TrimSpace(in.Currency))
 	in.Description = strings.TrimSpace(in.Description)
-	if in.TenantID == "" || in.MerchantAccountID == "" || in.IdempotencyKey == "" || in.Amount <= 0 {
-		return domain.Invoice{}, false, errors.New("tenant, merchant account, idempotency key and positive amount are required")
+	if in.TenantID == "" || in.IdempotencyKey == "" || in.Amount <= 0 {
+		return domain.Invoice{}, false, errors.New("tenant, idempotency key and positive amount are required")
 	}
 	if in.Currency == "" {
 		in.Currency = "IDR"
@@ -54,7 +58,42 @@ func (s Service) CreateInvoice(ctx context.Context, in CreateInvoiceInput) (doma
 	if len(in.IdempotencyKey) > 128 || len(in.Description) > 200 {
 		return domain.Invoice{}, false, errors.New("idempotency key or description is too long")
 	}
-	merchant, err := s.Repo.MerchantAccount(ctx, in.TenantID, in.MerchantAccountID)
+	// Sandbox hosted invoices need tenant QRIS configuration. Keep the
+	// production provider path compatible with older service callers that only
+	// persisted a merchant account; the authenticated HTTP handler still
+	// resolves and validates the tenant before calling this service.
+	tenant, tenantErr := s.Repo.Tenant(ctx, in.TenantID)
+	if tenantErr != nil {
+		if in.SandboxMode || !errors.Is(tenantErr, store.ErrNotFound) {
+			return domain.Invoice{}, false, tenantErr
+		}
+		tenant = domain.Tenant{ID: in.TenantID}
+	}
+	if in.SandboxMode && tenant.UseUniqueAmountCode && in.Amount > maxInvoiceAmount-99 {
+		return domain.Invoice{}, false, fmt.Errorf("amount must not exceed %d when unique amount codes are enabled", maxInvoiceAmount-99)
+	}
+	var merchant domain.MerchantAccount
+	err := error(nil)
+	if in.MerchantAccountID != "" {
+		merchant, err = s.Repo.MerchantAccount(ctx, in.TenantID, in.MerchantAccountID)
+	} else {
+		accounts, listErr := s.Repo.ListMerchantAccounts(ctx, in.TenantID)
+		if listErr != nil {
+			return domain.Invoice{}, false, listErr
+		}
+		active := make([]domain.MerchantAccount, 0, len(accounts))
+		for _, account := range accounts {
+			if account.Active {
+				active = append(active, account)
+			}
+		}
+		sort.Slice(active, func(i, j int) bool { return active[i].ID < active[j].ID })
+		if len(active) == 0 {
+			return domain.Invoice{}, false, errors.New("no active merchant account configured for tenant")
+		}
+		merchant = active[0]
+		in.MerchantAccountID = merchant.ID
+	}
 	if err != nil {
 		return domain.Invoice{}, false, err
 	}
@@ -62,16 +101,65 @@ func (s Service) CreateInvoice(ctx context.Context, in CreateInvoiceInput) (doma
 		return domain.Invoice{}, false, errors.New("merchant account inactive")
 	}
 	now := s.now()
-	inv := domain.Invoice{ID: id(), TenantID: in.TenantID, MerchantAccountID: in.MerchantAccountID, IdempotencyKey: in.IdempotencyKey, Amount: in.Amount, Currency: in.Currency, Description: in.Description, Status: domain.InvoiceCreating, SandboxMode: in.SandboxMode, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(30 * time.Minute)}
+	inv := domain.Invoice{ID: id(), TenantID: in.TenantID, MerchantAccountID: in.MerchantAccountID, IdempotencyKey: in.IdempotencyKey, RequestedAmount: in.Amount, Amount: in.Amount, Currency: in.Currency, Description: in.Description, Status: domain.InvoiceCreating, SandboxMode: in.SandboxMode, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(30 * time.Minute)}
 	inv, created, err := s.Repo.CreateInvoice(ctx, inv)
 	if err != nil {
 		return inv, created, err
 	}
 	if !created {
-		if inv.MerchantAccountID != in.MerchantAccountID || inv.Amount != in.Amount || inv.Currency != in.Currency || inv.Description != in.Description {
+		requestedAmount := inv.RequestedAmount
+		if requestedAmount == 0 {
+			requestedAmount = inv.Amount
+		}
+		if inv.MerchantAccountID != in.MerchantAccountID || requestedAmount != in.Amount || inv.Currency != in.Currency || inv.Description != in.Description {
 			return inv, false, ErrIdempotencyConflict
 		}
 		return inv, false, nil
+	}
+	if in.SandboxMode {
+		template, templateErr := s.sandboxQRISTemplate(ctx, in.TenantID)
+		if templateErr != nil {
+			return domain.Invoice{}, true, s.failCreate(ctx, inv, templateErr)
+		}
+		if tenant.MerchantID == "" {
+			return domain.Invoice{}, true, s.failCreate(ctx, inv, errors.New("tenant is not linked to a Merchant ID"))
+		}
+		codes := []int64{0}
+		if tenant.UseUniqueAmountCode {
+			order := s.UniqueAmountCodeOrder
+			if order == nil {
+				order = secureUniqueAmountCodeOrder
+			}
+			codes, err = order()
+			if err != nil {
+				return domain.Invoice{}, true, s.failCreate(ctx, inv, err)
+			}
+		}
+		for _, amountCode := range codes {
+			candidate := inv
+			candidate.Amount = in.Amount + amountCode
+			candidate.UniqueAmountCode = amountCode
+			candidate.QRISTemplateID = template.ID
+			candidate.QRISMerchantID = tenant.MerchantID
+			candidate.QRISMerchantName = strings.TrimSpace(template.MerchantName)
+			candidate.QRISMerchantCity = strings.TrimSpace(template.MerchantCity)
+			candidate.ProviderReference = "sandbox-" + candidate.ID
+			candidate.ProviderRequestDate = now.Format(time.RFC3339)
+			candidate.QRPayload, err = qris.Convert(template.StaticPayload, candidate.Amount)
+			if err != nil {
+				return domain.Invoice{}, true, s.failCreate(ctx, inv, err)
+			}
+			if err = candidate.Transition(domain.InvoicePending, s.now()); err != nil {
+				return domain.Invoice{}, true, err
+			}
+			if err = s.Repo.ActivateHostedInvoice(ctx, candidate); errors.Is(err, store.ErrUniqueAmountUnavailable) {
+				continue
+			} else if err != nil {
+				return domain.Invoice{}, true, err
+			}
+			return candidate, true, nil
+		}
+		return domain.Invoice{}, true, s.failCreate(ctx, inv, store.ErrUniqueAmountUnavailable)
 	}
 	p, err := s.Provider(ctx, merchant)
 	if err != nil {
@@ -91,6 +179,63 @@ func (s Service) CreateInvoice(ctx context.Context, in CreateInvoiceInput) (doma
 	s.audit(ctx, inv.TenantID, "api_key", "invoice.created", "invoice", inv.ID)
 	return inv, true, nil
 }
+
+func secureUniqueAmountCodeOrder() ([]int64, error) {
+	codes := make([]int64, 99)
+	for i := range codes {
+		codes[i] = int64(i + 1)
+	}
+	for i := len(codes) - 1; i > 0; i-- {
+		index, err := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
+		if err != nil {
+			return nil, err
+		}
+		j := int(index.Int64())
+		codes[i], codes[j] = codes[j], codes[i]
+	}
+	return codes, nil
+}
+
+func (s Service) sandboxQRISTemplate(ctx context.Context, tenantID string) (domain.QRISTemplate, error) {
+	templates, err := s.Repo.ListQRISTemplates(ctx)
+	if err != nil {
+		return domain.QRISTemplate{}, err
+	}
+	eligible := make([]domain.QRISTemplate, 0, len(templates))
+	for _, template := range templates {
+		if template.Active && template.StaticToDynamic && qrisTemplateAccessible(template, tenantID) {
+			eligible = append(eligible, template)
+		}
+	}
+	if len(eligible) == 0 {
+		return domain.QRISTemplate{}, errors.New("no active stored QRIS template is available for tenant")
+	}
+	sort.Slice(eligible, func(i, j int) bool {
+		iOwned := eligible[i].TenantID == tenantID
+		jOwned := eligible[j].TenantID == tenantID
+		if iOwned != jOwned {
+			return iOwned
+		}
+		if !eligible[i].CreatedAt.Equal(eligible[j].CreatedAt) {
+			return eligible[i].CreatedAt.After(eligible[j].CreatedAt)
+		}
+		return eligible[i].ID < eligible[j].ID
+	})
+	return eligible[0], nil
+}
+
+func qrisTemplateAccessible(template domain.QRISTemplate, tenantID string) bool {
+	scope := template.AccessScope
+	if scope == "" {
+		if template.TenantID == "" {
+			scope = "all_tenants"
+		} else {
+			scope = "selected_tenant"
+		}
+	}
+	return scope == "all_tenants" || (scope == "selected_tenant" && template.TenantID == tenantID)
+}
+
 func (s Service) failCreate(ctx context.Context, inv domain.Invoice, cause error) error {
 	_ = inv.Transition(domain.InvoiceFailed, s.now())
 	_ = s.Repo.UpdateInvoice(ctx, inv)

@@ -67,7 +67,7 @@ function colors(theme: PaymentThemeConfig) {
   };
 }
 
-export function PaymentPageRenderer({ session, remainingSeconds, statusLabel, cancelling, onCancel, onRedirect }: PaymentPageRendererProps) {
+export function PaymentPageRenderer({ session, remainingSeconds = 0, statusLabel = "Menunggu pembayaran", cancelling, onCancel, onRedirect }: PaymentPageRendererProps) {
   const [copiedAmount, setCopiedAmount] = useState(false);
   const theme = session.theme?.config ?? {};
   const branding = { ...SYSTEM_BRANDING, ...(theme.tenant_branding ?? {}), ...(theme.branding ?? {}) };
@@ -205,6 +205,13 @@ export function PaymentPageRenderer({ session, remainingSeconds, statusLabel, ca
                   )}
 
                   {(theme.payment_visibility?.show_amount ?? true) && (
+                    <>
+                    {session.qris_merchant_name && <div className="hosted-merchant-identity">
+                      <span className="hosted-merchant-label">Nama penerima QRIS</span>
+                      <strong>{session.qris_merchant_name}</strong>
+                      {session.qris_merchant_city && <small>{session.qris_merchant_city}</small>}
+                      <span className="hosted-merchant-hint">Pastikan nama ini tampil setelah QR dipindai.</span>
+                    </div>}
                     <div className="hosted-amount-row">
                       <span className="hosted-amount-value">{formatAmount(session.amount, session.currency)}</span>
                       <button
@@ -218,6 +225,11 @@ export function PaymentPageRenderer({ session, remainingSeconds, statusLabel, ca
                         {copiedAmount && <span>Tersalin</span>}
                       </button>
                     </div>
+                    {session.unique_amount_code ? <div className="hosted-amount-breakdown">
+                      <span>Nominal pesanan: {formatAmount(session.requested_amount ?? session.amount - session.unique_amount_code, session.currency)}</span>
+                      <strong>Kode unik: {String(session.unique_amount_code).padStart(2, "0")}</strong>
+                    </div> : null}
+                    </>
                   )}
 
                   {timerEnabled && (
